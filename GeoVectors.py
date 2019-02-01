@@ -261,7 +261,7 @@ def help_me(self) :
     To change the index column, use this command : 
         DF = DF.set_index("objectid",drop=True)
         
-    To access to specifc row NumBer use this command : 
+    To access to specifc row number use this command : 
         DF.iloc[id,:]
     """
     print(Txt)
