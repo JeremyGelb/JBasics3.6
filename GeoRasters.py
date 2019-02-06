@@ -10,6 +10,9 @@ import shapely
 import numpy as np
 import GeomTools as GT
 import matplotlib.pyplot as plt
+from collections import defaultdict
+
+from libs.QuadTree import Index as QdIndex
 
 ##############################################################
 ## Definition des erreurs que l'on peut rencontrer
@@ -79,7 +82,7 @@ class SpArray(np.ndarray):
 ##############################################################  
 class MultiSpArray(object) : 
     
-    def __init__(self,Extent,Shape,MaxSize,PixelShape,Src=None,Source=None) : 
+    def __init__(self,Extent,MaxSize,Shape,PixelShape,Src=None,Source=None) : 
         """
         Extent : une etendue specifie ainsi : (minX,minY,MaxX,MaxY)
         src : un wkt de projection tel que renvoye par osr
@@ -92,7 +95,46 @@ class MultiSpArray(object) :
         self.PixelShape = PixelShape
         self.Source = Source
         self.Src=Src
-        #2) construire l'index spatial
+        self.MaxSize=MaxSize
+        #2) construire la structures des tuiles
+        NbWidth = int(self.Shape[1]/MaxSize)
+        if NbWidth*MaxSize<self.Shape[1] : 
+            NbWidth+=1
+        NbHeight = int(Shape[0]/MaxSize)
+        if NbHeight*MaxSize<self.Shape[0] : 
+            NbHeight+=1
+        TotCol=0
+        #iterer sur les colonnes pour delimiter les tuiles
+        self.TileIndex = {}
+        for i in range(NbWidth) : 
+            if TotCol+MaxSize<=self.Shape[1] : 
+                AddCol = MaxSize
+            else : 
+                AddCol = self.Shape[1]-TotCol
+            StartCol = TotCol
+            EndCol = TotCol + AddCol
+            MinX = self.Extent[0]+self+PixelShape[0]*StartCol
+            MaxX = self.Extent[0]+self+PixelShape[0]*EndCol
+            #iterer sur les lignes pour delimiter les tuiles
+            TotRow = 0
+            for j in range(NbHeight) : 
+                if TotRow+MaxSize<=self.Shape[0] : 
+                    AddRow = MaxSize
+                else : 
+                    AddRow = self.Shape[0]-TotRow
+                StartRow = TotRow
+                EndRow = TotRow+AddRow
+                MinY = self.Extent[3]-self.PixelShape[1]*StartRow
+                MaxY = self.Extent[3]-self.PixelShape[1]*EndRow
+                self.TileIndex[(i,j)] = {"Extent":[MinX,MinY,MaxX,MaxY],"Pxs":[StartRow,EndRow,StartCol,EndCol]}
+                TotRow+=AddRow
+            TotCol+=AddCol
+        #Creer finalement l'index spatial
+        #BBox demande par QIndex : (xmin,ymin,xmax,ymax)
+        self.SpIndex = QdIndex(self.Extent)
+        for key,value in self.TileIndex.values() : 
+            self.SpIndex.insert(key,value["Extent"])
+        
         
         
 

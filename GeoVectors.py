@@ -6,13 +6,16 @@ Created on Mon Oct 01 10:48:15 2018
 """
 
 import geopandas as gpd
-from osgeo import ogr
+from osgeo import ogr,osr
 import shapely
 from shapely import wkt
+from shapely import wkb
 import numpy as np
 import copy
 import threading
 import queue as Queue
+import sqlite3
+import os
 
 ###################################################
 ###################################################
@@ -103,12 +106,12 @@ gpd.geodataframe.GeoDataFrame.MakeOneEmpty = make_me_empty
 
 
 #####
-# Fonction pour creer une replique vide
+# Fonction pour creer un champs OID
 #####
 
 def make_oid(self) : 
     self["OID"] = range(len(self))
-    New = self.set_index("OID",drop=True)
+    New = self.set_index("OID",drop=False)
     return New
     
 
@@ -245,7 +248,80 @@ gpd.geodataframe.GeoDataFrame.SpatialFilter = spatial_filter
 #############################################
 
 
+###############
+## Afficher des fonctions utilitaires
+###############
 
+def save_sdb(self,File,TableName,GeomField="geometry",Id="OID") : 
+    """
+    Fonction permettant d'enregistrer le geodataframe dans une BD sqlite
+    NB : pour cela on passe comme des brutes par OGR... donc il faut avoir les dependance necessaires
+    """
+    #0) verifier que la BD existe, sinon la creer
+    DB_PATH = File
+    Driver=ogr.GetDriverByName('SQLite')
+    if os.path.isfile(File)==False : 
+        Database = Driver.CreateDataSource(File,options=['SPATIALITE=yes'])
+    Source = Driver.Open(File,1)
+    GeomType = self.geom_type[0].lower()
+        
+    if GeomType == "linestring" :
+        geom_type = ogr.wkbLineString25D
+    elif GeomType == "multilinestring" : 
+        geom_type = ogr.wkbMultiLineString
+    if GeomType == "point" :
+        geom_type = ogr.wkbPoint
+    elif GeomType == "multipoint" : 
+        geom_type = ogr.wkbMultiPoint
+    if GeomType == "polygon" :
+        geom_type = ogr.wkbPOLYGON
+    elif GeomType == "multipolygon" : 
+        geom_type = ogr.wkbMultiPolygon
+
+    #si le layer existe deja, il faut le supprimer
+    if Source.GetLayerByName(TableName) is not None :
+        Source.DeleteLayer(TableName.lower())
+    #recuperer le Src
+    EPSG = self.crs["init"].split(':')[1]
+    SpatialRef = osr.SpatialReference()
+    SpatialRef.ImportFromEPSG(int(EPSG))
+    
+    SortieLayer = Source.CreateLayer(TableName, srs = SpatialRef,geom_type = geom_type ,options=['FORMAT=SPATIALITE'])
+    #creation des champs du layer
+    for Name,Value in zip(self.columns,self.iloc[0]) :
+        if Name != GeomField :
+            Type = type(Value)
+            if Type is str : 
+                LengthMax =  np.max(list(map(len,self[Name])))
+                NewField = ogr.FieldDefn(Name, ogr.OFTString)
+                NewField.width=int(LengthMax)
+            elif Type is float : 
+                NewField = ogr.FieldDefn(Name, ogr.OFTReal)
+            elif Type is int : 
+                NewField = ogr.FieldDefn(Name, ogr.OFTInteger)
+            else : 
+                raise ValueError("This Field ("+Name+") type is currently not supported : "+str(Type))
+            SortieLayer.CreateField(NewField)
+    SortieLayer.StartTransaction()     
+    #remplissage du Layer
+    FDefn = SortieLayer.GetLayerDefn()
+    for row in self.Iterate() :
+        Feature = ogr.Feature(FDefn)
+        for Field in self.columns :
+            if Field != GeomField :
+                value = row[Field]
+                Feature.SetField(Field,value)
+                    
+        Feature.SetGeometry(ToOgr(row[GeomField]))
+        SortieLayer.CreateFeature(Feature)
+    SortieLayer.CommitTransaction()
+    del SortieLayer
+    Source.Destroy()
+        
+
+gpd.geodataframe.GeoDataFrame.SaveSdb = save_sdb 
+
+#############################################
 
 ###############
 ## Afficher des fonctions utilitaires
@@ -263,6 +339,9 @@ def help_me(self) :
         
     To access to specifc row number use this command : 
         DF.iloc[id,:]
+        
+    To get the projection : 
+        DF.crs
     """
     print(Txt)
     
@@ -271,19 +350,21 @@ gpd.geodataframe.GeoDataFrame.HelpMe = help_me
 
 
 if __name__=="__main__" : 
-    DF = gpd.read_file(FileTest)
-    DF = DF.set_index("objectid",drop=True)
-    DF2 = DF.to_crs(epsg=3857)
-    G = DF2.iloc[1,]["geometry"]
-    DF3 = DF2.SpatialFilter(DF2.iloc[1,]["geometry"].buffer(1500),"intersect")
-    def GetPreviousArea(Feat,i,ThisDF = DF3) : 
-        if i > 0 :
-            PrevFeat = ThisDF.iloc[i-1,:]
-            return PrevFeat["geometry"].area
-        else : 
-            return -999
-    DF3.CalculateFieldMC("PrevArea",GetPreviousArea,Cores=2)
-    DF4 = DF3[["PrevArea","cp_arrondis","geometry"]]
-    DF5 = DF4.AddRows([{"PrevArea":1002,"cp_arrondis":74150,"geometry":G},{"PrevArea":1002,"cp_arrondis":74150,"geometry":G}])
-    DF6 = DF5.MakeOID()
+    DF = gpd.read_file(gpd.datasets.get_path("naturalearth_cities"))
+    DF.SaveSdb("C:/Users/gelbj/OneDrive/Bureau/TEMP/BDTest.sdb",'Cities2')
+#    DF = gpd.read_file(FileTest)
+#    DF = DF.set_index("objectid",drop=True)
+#    DF2 = DF.to_crs(epsg=3857)
+#    G = DF2.iloc[1,]["geometry"]
+#    DF3 = DF2.SpatialFilter(DF2.iloc[1,]["geometry"].buffer(1500),"intersect")
+#    def GetPreviousArea(Feat,i,ThisDF = DF3) : 
+#        if i > 0 :
+#            PrevFeat = ThisDF.iloc[i-1,:]
+#            return PrevFeat["geometry"].area
+#        else : 
+#            return -999
+#    DF3.CalculateFieldMC("PrevArea",GetPreviousArea,Cores=2)
+#    DF4 = DF3[["PrevArea","cp_arrondis","geometry"]]
+#    DF5 = DF4.AddRows([{"PrevArea":1002,"cp_arrondis":74150,"geometry":G},{"PrevArea":1002,"cp_arrondis":74150,"geometry":G}])
+#    DF6 = DF5.MakeOID()
     
