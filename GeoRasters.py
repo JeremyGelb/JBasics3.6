@@ -28,6 +28,49 @@ class ExtentError(Exception):
 
 
 ##############################################################
+## Definition d'une classe qui va gerer les extent
+##############################################################
+class GeoExtent(object) :
+    
+    def __init__(self,Xmin,Ymin,Xmax,Ymax):
+        self.Xmin = Xmin
+        self.Xmax = Xmax
+        self.Ymin = Ymin
+        self.Ymax = Ymax
+        self.Width = abs(self.Xmax-self.Xmin)
+        self.Height = abs(self.Ymax-self.Ymin)
+        self.Geom = shapely.geometry.Polygon([(Xmin,Ymin),(Xmax,Ymin),(Xmax,Ymax),(Xmin,Ymax),(Xmin,Ymin)])
+        
+    def __repr__(self) : 
+        return "Xmin : {} - Xmax : {} - Ymin : {} - Ymax : ".format(self.Xmin,self.Xmax,self.Ymin,self.Ymax)
+        
+    def List(self,Format=1) :
+        """
+        Format 1 : lower corner ; upper corner
+        Format 2 : XX ; YY
+        """
+        if Format==1 : 
+            return (self.Xmin,self.Ymin,self.Xmax,self.Ymax)
+        elif Format == 2 : 
+            return (self.Xmin,self.Xmax,self.Ymin,self.Ymax)
+        else : 
+            raise ValueError("This format is not supported by the List methode")
+    
+    def Plot(self,LineColor="r",LineWidth=1) :
+        """
+        Plot the extent as a line in the current plot or create a new one
+        """
+        try :
+            fig = plt.gcf()
+            ax = fig.axes[0]
+        except IndexError : 
+            fig,ax = plt.subplots()
+        lc = LineCollection([list(self.Geom.boundary.coords)],colors=LineColor,linewidths=LineWidth)
+        ax.add_collection(lc)
+        plt.show()
+        
+        
+##############################################################
 ## Classe centrale SpArray
 #etend le classique np.array pour lui donner une dimension spatiale
 ##############################################################    
@@ -41,6 +84,7 @@ class SpArray(np.ndarray):
     """
     def __new__(cls, data, Src,Extent):
         # Input array is an already formed ndarray instance
+        Extent = GeoExtent(*Extent)
         # We first cast to be our class type
         if type(data)!=np.ndarray :
             input_array = np.array(data)
@@ -50,7 +94,7 @@ class SpArray(np.ndarray):
         # add the new attribute to the created instance
         obj.Src = Src
         obj.Extent = Extent
-        obj.PixelShape = ((Extent[2]-Extent[0])/input_array.shape[1],(Extent[3]-Extent[1])/input_array.shape[0])
+        obj.PixelShape = (Extent.Width/input_array.shape[1],Extent.Height/input_array.shape[0])
         # Finally, we must return the newly created object:
         return obj
 
@@ -71,7 +115,7 @@ class SpArray(np.ndarray):
         Renvoit la valeur du pixel au coordonnes indiquees si le pixel 
         se trouve dans l'etendue du raster, sinon, souleve une erreur
         """
-        if GT.InExtent(shapely.geometry.Point(Coords),self.Extent)==False : 
+        if self.Extent.Geom.intersects(shapely.geometry.Point(Coords))==False : 
             raise ExtentError("The point "+str(Coords)+" is not in the boundary of the raster : "+str(self.Extent))
         #step1 : calculer la colonne dans laquelle on se trouve
         Col =  int((Coords[0]-self.Extent[0])/self.PixelShape[0])
@@ -87,10 +131,10 @@ class SpArray(np.ndarray):
         Renvoit la valeur du pixel au coordonnes indiquees si le pixel 
         se trouve dans l'etendue du raster, sinon, souleve une erreur
         """
-        if GT.InExtent(shapely.geometry.Point(Coords),self.Extent)==False : 
+        if self.Extent.Geom.intersects(shapely.geometry.Point(Coords))==False :
             raise ExtentError("The point "+str(Coords)+" is not in the boundary of the raster : "+str(self.Extent))
         #step1 : calculer la colonne dans laquelle on se trouve
-        Col = (Coords[0]-self.Extent[0])/self.PixelShape[0]
+        Col = (Coords[0]-self.Extent.Xmin)/self.PixelShape[0]
 #        if int(Col)<Col : 
 #            Col = int(Col)+1
 #        else : 
@@ -98,7 +142,7 @@ class SpArray(np.ndarray):
         Col = int(Col)
         if Col == self.shape[1] : 
             Col-=1
-        Row = self.shape[0]-(Coords[1]-self.Extent[1])/self.PixelShape[1]
+        Row = self.shape[0]-(Coords[1]-self.Extent.Ymin)/self.PixelShape[1]
         Row = int(Row)
         if Row == self.shape[0] : 
             Row-=1
@@ -110,14 +154,14 @@ class SpArray(np.ndarray):
         PxCoords Row,Col
         """
         if Type=="Point" : 
-            X = self.Extent[0]+((PxCoords[1])*self.PixelShape[0])+0.5*self.PixelShape[0]
-            Y = self.Extent[3]-((PxCoords[0])*self.PixelShape[1])-0.5*self.PixelShape[1]
+            X = self.Extent.Xmin+((PxCoords[1])*self.PixelShape[0])+0.5*self.PixelShape[0]
+            Y = self.Extent.Ymax-((PxCoords[0])*self.PixelShape[1])-0.5*self.PixelShape[1]
             return shapely.geometry.Point((X,Y))
         elif Type=="Polygone" : 
-            x1 = self.Extent[0]+((PxCoords[0]-1)*self.PixelShape[0])
-            x2 = self.Extent[0]+((PxCoords[0]-1)*self.PixelShape[0])+self.PixelShape[0]
-            y1 = self.Extent[3]-((PxCoords[1]-1)*self.PixelShape[1])
-            y2 = self.Extent[3]-((PxCoords[1]-1)*self.PixelShape[1])-self.PixelShape[1]
+            x1 = self.Extent.Xmin+((PxCoords[0]-1)*self.PixelShape[0])
+            x2 = self.Extent.Xmin+((PxCoords[0]-1)*self.PixelShape[0])+self.PixelShape[0]
+            y1 = self.Extent.Ymax-((PxCoords[1]-1)*self.PixelShape[1])
+            y2 = self.Extent.Ymax-((PxCoords[1]-1)*self.PixelShape[1])-self.PixelShape[1]
             return shapely.geometry.Polygon([[x1,y1],[x2,y1],[x2,y2],[x1,y2]])
         else : 
             raise ValueError("This type : "+Type+" is not supported")
@@ -135,9 +179,9 @@ class SpArray(np.ndarray):
         Step = self.PixelShape[1]
         Intersected={}
         MaxIter = self.shape[0]
-        StartX = self.Extent[0]
-        EndX = self.Extent[2]
-        StartY = self.Extent[1]+Step/2.0
+        StartX = self.Extent.Xmin
+        EndX = self.Extent.Xmax
+        StartY = self.Extent.Ymin+Step/2.0
         #Bars =[]
         #Xs=[]
         #Ys=[]
@@ -218,9 +262,9 @@ class SpArray(np.ndarray):
     
     def Plot(self,Color="viridis",Vlim=None) :
         if Vlim is None : 
-            plt.imshow(self,extent = (self.Extent[0],self.Extent[2],self.Extent[1],self.Extent[3]),cmap=Color)
+            plt.imshow(self,extent = self.Extent.List(Format=2),cmap=Color)
         else : 
-            plt.imshow(self,extent = (self.Extent[0],self.Extent[2],self.Extent[1],self.Extent[3]),cmap=Color,vmin=Vlim[0],vmax=Vlim[1])
+            plt.imshow(self,extent = self.Extent.List(Format=2),cmap=Color,vmin=Vlim[0],vmax=Vlim[1])
 
 
 ##############################################################
@@ -244,8 +288,8 @@ class MultiSpArray(object) :
         """
         #1) setting des parametres
         if Source is None :
-            self.Extent = Extent
-            self.Shape = [Extent[2]-Extent[0],Extent[3]-Extent[1]]
+            self.Extent = GeoExtent(*Extent)
+            self.Shape = [self.Extent.Width,self.Extent.Height]
             self.PixelShape = PixelShape
             self.Crs=Crs
             self.Default=Default
@@ -255,8 +299,8 @@ class MultiSpArray(object) :
             ulx, xres, xskew, uly, yskew, yres  = DataSource.GetGeoTransform()
             lrx = ulx + (DataSource.RasterXSize * xres)
             lry = uly + (DataSource.RasterYSize * yres)
-            self.Extent = [ulx,lry,lrx,uly]
-            self.Shape = [self.Extent[2]-self.Extent[0],self.Extent[3]-self.Extent[1]]
+            self.Extent = GeoExtent(ulx,lry,lrx,uly)
+            self.Shape = [self.Extent.Width,self.Extent.Height]
             self.PixelShape = [xres,-yres]
             self.Shape2 = [DataSource.RasterXSize,DataSource.RasterYSize]
         
@@ -280,8 +324,8 @@ class MultiSpArray(object) :
                 AddCol = self.Shape2[0]-TotCol
             StartCol = TotCol
             EndCol = TotCol + AddCol
-            MinX = self.Extent[0]+self.PixelShape[0]*StartCol
-            MaxX = self.Extent[0]+self.PixelShape[0]*EndCol
+            MinX = self.Extent.Xmin+self.PixelShape[0]*StartCol
+            MaxX = self.Extent.Xmin+self.PixelShape[0]*EndCol
             #iterer sur les lignes pour delimiter les tuiles
             TotRow = 0
             for j in range(NbHeight) : 
@@ -291,16 +335,16 @@ class MultiSpArray(object) :
                     AddRow = self.Shape2[1]-TotRow
                 StartRow = TotRow
                 EndRow = TotRow+AddRow
-                MaxY = self.Extent[3]-self.PixelShape[1]*StartRow
-                MinY = self.Extent[3]-self.PixelShape[1]*EndRow
-                self.TileIndex[(i,j)] = {"Extent":[MinX,MinY,MaxX,MaxY],"Pxs":[int(StartCol),int(EndCol),int(StartRow),int(EndRow)]}
+                MaxY = self.Extent.Ymax-self.PixelShape[1]*StartRow
+                MinY = self.Extent.Ymax-self.PixelShape[1]*EndRow
+                self.TileIndex[(i,j)] = {"Extent":GeoExtent(MinX,MinY,MaxX,MaxY),"Pxs":[int(StartCol),int(EndCol),int(StartRow),int(EndRow)]}
                 TotRow+=AddRow
             TotCol+=AddCol
         #Creer finalement l'index spatial
         #BBox demande par QIndex : (xmin,ymin,xmax,ymax)
-        self.SpIndex = QdIndex(self.Extent)
+        self.SpIndex = QdIndex(self.Extent.List())
         for key,value in self.TileIndex.items() : 
-            self.SpIndex.insert(key,value["Extent"])
+            self.SpIndex.insert(key,value["Extent"].List())
             
             
     ########################################
@@ -318,7 +362,7 @@ class MultiSpArray(object) :
             DataSource = gdal.Open(self.Source)
             Data = DataSource.ReadAsArray(xoff=Window[0],yoff=Window[2], xsize = Window[1]- Window[0], ysize = Window[3]-Window[2])
             #print(Data)
-            Array = SpArray(Data,self.Crs,Extent)
+            Array = SpArray(Data,self.Crs,Extent.List())
             del DataSource
         else : 
             Array = self.__Arrays[Key]
@@ -337,8 +381,9 @@ class MultiSpArray(object) :
         Dico = {}
         for key in self.SpIndex.intersect(Extent) : 
             Raster = self.GetRaster(key,FromSource=FromSource)
-            Pxs = Raster.ScanLine(Geom)
-            Dico[key] = Pxs
+            if Raster.Extent.Geom.intersects(Geom)==True :
+                Pxs = Raster.ScanLine(Geom)
+                Dico[key] = Pxs
         return Dico
     
     def SetPixels(self,PixelSelection,FromSource=True) : 
@@ -369,13 +414,16 @@ class MultiSpArray(object) :
         Lines = []
         for Key,Value in self.TileIndex.items() : 
             Extent = Value["Extent"]
-            Lines.append([(Extent[0],Extent[1]),(Extent[1],Extent[1]),(Extent[1],Extent[3]),(Extent[0],Extent[3]),(Extent[0],Extent[1])])
+            Lines.append(list(Extent.Geom.boundary.coords))
         lc = LineCollection(Lines,colors=LineColor,linewidths=LineWidth)
-        fig = plt.gcf()
-        ax = fig.axes[0]
+        try :
+            fig = plt.gcf()
+            ax = fig.axes[0]
+        except IndexError : 
+            fig,ax = plt.subplots()
         ax.add_collection(lc)
-        ax.set_xlim(self.Extent[0],self.Extent[2])
-        ax.set_ylim(self.Extent[1],self.Extent[3])
+        ax.set_xlim(self.Extent.Xmin,self.Extent.Xmax)
+        ax.set_ylim(self.Extent.Ymin,self.Extent.Ymax)
         plt.show()
             
         
@@ -384,10 +432,9 @@ class MultiSpArray(object) :
         Permet de dessiner tout ou partie du raster
         """
         if Extent is None : 
-            Extent = self.Extent
+            Extent = self.Extent.List()
         
         Keys = self.SpIndex.intersect(Extent)
-        f = plt.figure()
         Arrays=[]
         Mins=[]
         Maxs=[]
@@ -398,9 +445,14 @@ class MultiSpArray(object) :
             Maxs.append(np.max(Raster))
         for Array in Arrays : 
             Array.Plot(Vlim=[np.min(Mins),np.max(Maxs)])
-        a = f.axes[0]
-        a.set_xlim(Extent[0],Extent[2])
-        a.set_ylim(Extent[1],Extent[3])
+        try :
+            fig = plt.gcf()
+            ax = fig.axes[0]
+        except IndexError : 
+            fig,ax = plt.subplots()
+        
+        ax.set_xlim(Extent[0],Extent[2])
+        ax.set_ylim(Extent[1],Extent[3])
         plt.show()
         plt.colorbar()
    
@@ -452,7 +504,8 @@ if __name__=="__main__" :
     
     Poly = shapely.wkt.loads("Polygon ((654666.14606649207416922 6861235.97581147402524948, 654588.73020110744982958 6861178.4277345510199666, 654517.48020110744982958 6861069.49744608905166388, 654597.63645110744982958 6861114.71379224304109812, 654636.00183572282548994 6861177.05754224304109812, 654692.1797203382011503 6861096.90129224304109812, 654781.92731649207416922 6861160.6152345510199666, 654808.64606649207416922 6861243.511869166046381, 654716.84318187669850886 6861301.74504224304109812, 654663.40568187669850886 6861260.63927301205694675, 654666.14606649207416922 6861235.97581147402524948))")
     Link = r"L:\TEMP\BatiParis_TestRaster.tif"
-    Raster1 = MultiSpArray(1000,Source=Link)
+    Raster1 = MultiSpArray(400,Source=Link)
+    Raster1.Plot()
 #    Raster1.Plot()
 #    Raster1.PlotGrid(LineColor="r")
 #    
