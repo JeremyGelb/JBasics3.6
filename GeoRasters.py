@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from matplotlib.collections import PatchCollection, LineCollection
 from collections import defaultdict
+import copy
 
 from libs.QuadTree import Index as QdIndex
 
@@ -170,21 +171,21 @@ class SpArray(np.ndarray):
     ## methodes d'acces aux pixels par groupe
     ########################################
     
-    def ScanLine(self,Geom) :
+    def ScanLine(self,Geom,Default=np.nan,Reverse=False) :
         """
         Fais passer une ligne qui remonte ligne par ligne le raster
         NB : Geom doit etre de type shapely
-        retourne une selection du raster, soit un dictionnaire de type : PxCoords = Value
+        retourne une selection du raster, soit un raster avec une valeur par defaut assignee a tout ce qui est au dehors
         """
         Step = self.PixelShape[1]
-        Intersected={}
+        #Intersected={}
         MaxIter = self.shape[0]
         StartX = self.Extent.Xmin
         EndX = self.Extent.Xmax
         StartY = self.Extent.Ymin+Step/2.0
-        #Bars =[]
-        #Xs=[]
-        #Ys=[]
+        Copied = copy.deepcopy(self)
+        As = []
+        Bs = []
         #debut des iterations
         for e in range(MaxIter) :
             #creation de la ligne
@@ -204,7 +205,9 @@ class SpArray(np.ndarray):
             elif Name=="Point" :
                 Coords = Inter.coords[0]
                 PxCoords = self.PxCoords(Coords)
-                Intersected[PxCoords] = self.Sample(Coords)
+                As.append(PxCoords[0])
+                Bs.append(PxCoords[1])
+                #Intersected[PxCoords] = self.Sample(Coords)
                 continue
             #iteration sur ces points
             for line in Lines :
@@ -212,13 +215,9 @@ class SpArray(np.ndarray):
                 Start,End = GT.GetExtremites(line)
                 Coords1 = self.PxCoords(Start.coords[0])
                 Coords2 = self.PxCoords(End.coords[0])
-#                Xs+=[Start.x,End.x]
-#                Ys+=[Start.y,End.y]
                 #verfication pour les extremites
                 Center1 = self.PxGeom(Coords1)
                 Center2 = self.PxGeom(Coords2)
-#                Xs+=[Center1.x,Center2.x]
-#                Ys+=[Center1.y,Center2.y]
                 if Center1.intersects(Geom) : 
                     StartCount=0
                 else : 
@@ -229,17 +228,19 @@ class SpArray(np.ndarray):
                     EndCount=0
                 
                 LastPx = int(Coords2[1])-int(Coords1[1])
-                for i in range(StartCount,LastPx+EndCount,1) :
+                for i in range(StartCount,LastPx+EndCount,1):
                     X = Coords1[1]+i
-                    Intersected[(Coords2[0],X)]=self[Coords2[0]][X]
-                #Intersected[(Coords2[0],Coords2[1])] = self[Coords2[0]][Coords2[1]]
-#        print("StartingPoints : ")
-#        plt.scatter(Xs,Ys,c="g")
-#        lc = LineCollection(Bars,colors="b",linewidths=1)
-#        fig = plt.gcf()
-#        ax = fig.axes[0]
-#        ax.add_collection(lc)
-        return Intersected
+                    As.append(Coords2[0])
+                    Bs.append(X)
+                    #Intersected[(Coords2[0],X)]=self[Coords2[0]][X]
+        mask = np.ones(self.shape,dtype=bool)
+        Idxs = (tuple(As),tuple(Bs))
+        mask[Idxs] = False
+        if Reverse :
+            Copied[~mask] = Default
+        else :
+            Copied[mask] = Default
+        return Copied
     
     
     def SetPixels(self,PixelSelection) : 
@@ -368,6 +369,13 @@ class MultiSpArray(object) :
             Array = self.__Arrays[Key]
         return Array
     
+    def Iterate(self,FromSource=True) : 
+        """
+        Iterateur permettant de boucler sur toutes les tuils
+        """
+        for Key in self.TileIndex.keys() : 
+            yield self.GetRaster(Key,FromSource=FromSource)
+    
     ########################################
     ## methode d'access au pixels
     ########################################
@@ -375,7 +383,7 @@ class MultiSpArray(object) :
     def IntersectedPixels(self,Geom,FromSource=True) : 
         """
         Geom doit etre une geometrie valide de type shapely
-        renvoit une selection de pixel triee par tuile :  CoordTile : {CoordPixel:value}
+        renvoit une selection de pixel triee par tuile :  CoordTile : SpArray
         """
         Extent = Geom.bounds
         Dico = {}
@@ -402,6 +410,45 @@ class MultiSpArray(object) :
         for key in self.SpIndex.intersect(Extent) : 
             Raster = self.GetRaster(key,FromSource=FromSource)
             return Raster.Sample(Coords)
+    
+    
+    ########################################
+    ## methodes de calcul de base
+    ########################################
+    
+    def Mean(self) : 
+        Sum = 0
+        N = 0
+        for Raster in self.Iterate() : 
+            Sum+=np.sum(Raster)
+            N += Raster.shape[0] * Raster.shape[1]
+        return Sum/N
+    
+    def Max(self) : 
+        Max = float("-inf")
+        for Raster in self.Iterate() :
+            m = np.max(Raster)
+            if m>Max : 
+                Max = m
+        return Max
+    
+    def Min(self) : 
+        Min = float("inf")
+        for Raster in self.Iterate() :
+            m = np.min(Raster)
+            if m<Min : 
+                Min = m
+        return Min
+    
+    def Std(self) : 
+        Mean = self.Mean()
+        Sum=0
+        N = 0
+        for Raster in self.Iterate() : 
+            Sum+=np.sum((Raster-Mean)**2)
+            N += Raster.shape[0] * Raster.shape[1]
+        return Sum/N
+        
     
     ########################################
     ## methode de dessin
@@ -487,10 +534,12 @@ if __name__=="__main__" :
     def test() : 
         Raster1.IntersectedPixels(Poly)
     
-#    Arr1=np.array([range(10) for e in range(10)])
-#    Raster1 = SpArray(data=Arr1,Extent=(0,0,100,100),Src="")
-#    Poly = shapely.wkt.loads("Polygon ((34 20.5, 150 20.5, 75.2 30, 34 50.2, 34 20.5))")
-#    Pxs = Raster1.ScanLine(Poly)
+    Arr1=np.array([range(10) for e in range(10)])
+    Raster1 = SpArray(data=Arr1,Extent=(0,0,100,100),Src="")
+    Poly = shapely.wkt.loads("Polygon ((34 20.5, 150 20.5, 75.2 30, 34 50.2, 34 20.5))")
+    Pxs1 = Raster1.ScanLine(Poly,Default=0)
+    Pxs2 = Raster1.ScanLine(Poly,Default=0,Reverse=True)
+    Pxs1.Plot()
 #    Raster1.Plot()
 #    Xs=[]
 #    Ys=[]
@@ -502,10 +551,10 @@ if __name__=="__main__" :
 #    plt.scatter(Xs,Ys,c="r")
 #    PlotPoly(Poly)
     
-    Poly = shapely.wkt.loads("Polygon ((654666.14606649207416922 6861235.97581147402524948, 654588.73020110744982958 6861178.4277345510199666, 654517.48020110744982958 6861069.49744608905166388, 654597.63645110744982958 6861114.71379224304109812, 654636.00183572282548994 6861177.05754224304109812, 654692.1797203382011503 6861096.90129224304109812, 654781.92731649207416922 6861160.6152345510199666, 654808.64606649207416922 6861243.511869166046381, 654716.84318187669850886 6861301.74504224304109812, 654663.40568187669850886 6861260.63927301205694675, 654666.14606649207416922 6861235.97581147402524948))")
-    Link = r"L:\TEMP\BatiParis_TestRaster.tif"
-    Raster1 = MultiSpArray(400,Source=Link)
-    Raster1.Plot()
+#    Poly = shapely.wkt.loads("Polygon ((654666.14606649207416922 6861235.97581147402524948, 654588.73020110744982958 6861178.4277345510199666, 654517.48020110744982958 6861069.49744608905166388, 654597.63645110744982958 6861114.71379224304109812, 654636.00183572282548994 6861177.05754224304109812, 654692.1797203382011503 6861096.90129224304109812, 654781.92731649207416922 6861160.6152345510199666, 654808.64606649207416922 6861243.511869166046381, 654716.84318187669850886 6861301.74504224304109812, 654663.40568187669850886 6861260.63927301205694675, 654666.14606649207416922 6861235.97581147402524948))")
+#    Link = r"L:\TEMP\BatiParis_TestRaster.tif"
+#    Raster1 = MultiSpArray(400,Source=Link)
+#    Raster1.Plot()
 #    Raster1.Plot()
 #    Raster1.PlotGrid(LineColor="r")
 #    
@@ -513,7 +562,7 @@ if __name__=="__main__" :
 #    Key = list(Raster1.SpIndex.intersect([654673,6861062,654673,6861062]))[0]
 #    Raster = Raster1.GetRaster(Key)
     
-    test()
+#    test()
     
 #    Selection = Raster1.IntersectedPixels(Poly)
 #    Xs=[]
