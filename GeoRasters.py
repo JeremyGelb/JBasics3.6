@@ -7,6 +7,7 @@ Created on Fri Feb  1 18:57:36 2019
 
 from osgeo import gdal, osr
 import shapely
+from shapely import wkt
 import numpy as np
 import GeomTools as GT
 import matplotlib.pyplot as plt
@@ -21,7 +22,7 @@ from libs.QuadTree import Index as QdIndex
 ##############################################################
 class ExtentError(Exception):
     """
-    Raise me when we ask somethong out of the bound of an object
+    Raise me when we ask something out of the bound of an object
     """
     pass
 
@@ -60,6 +61,10 @@ class SpArray(np.ndarray):
         self.Extent = getattr(obj, 'Extent', None)
         #defining the other elements
         self.PixelShape = getattr(obj,'PixelShape', None)
+        
+    ########################################
+    ## methodes d'acces aux pixels individuels
+    ########################################
     
     def Sample(self,Coords) : 
         """
@@ -70,8 +75,146 @@ class SpArray(np.ndarray):
             raise ExtentError("The point "+str(Coords)+" is not in the boundary of the raster : "+str(self.Extent))
         #step1 : calculer la colonne dans laquelle on se trouve
         Col =  int((Coords[0]-self.Extent[0])/self.PixelShape[0])
-        Row = int((Coords[1]-self.Extent[1])/self.PixelShape[1])
+        if Col == self.shape[0] : 
+            Col-=1
+        Row = self.shape[1]-int((Coords[1]-self.Extent[1])/self.PixelShape[1])
+        if Row == self.shape[1] : 
+            Row-=1
         return self[Row,Col]
+    
+    def PxCoords(self,Coords) : 
+        """
+        Renvoit la valeur du pixel au coordonnes indiquees si le pixel 
+        se trouve dans l'etendue du raster, sinon, souleve une erreur
+        """
+        if GT.InExtent(shapely.geometry.Point(Coords),self.Extent)==False : 
+            raise ExtentError("The point "+str(Coords)+" is not in the boundary of the raster : "+str(self.Extent))
+        #step1 : calculer la colonne dans laquelle on se trouve
+        Col = (Coords[0]-self.Extent[0])/self.PixelShape[0]
+#        if int(Col)<Col : 
+#            Col = int(Col)+1
+#        else : 
+#            Col = int(Col)
+        Col = int(Col)
+        if Col == self.shape[1] : 
+            Col-=1
+        Row = self.shape[0]-(Coords[1]-self.Extent[1])/self.PixelShape[1]
+        Row = int(Row)
+        if Row == self.shape[0] : 
+            Row-=1
+        return [Row,Col]
+    
+    def PxGeom(self,PxCoords,Type="Point") : 
+        """
+        renvoit une geometrie du pixel, peut etre son centroid : Point, ou son polygone : Polygone
+        PxCoords Row,Col
+        """
+        if Type=="Point" : 
+            X = self.Extent[0]+((PxCoords[1])*self.PixelShape[0])+0.5*self.PixelShape[0]
+            Y = self.Extent[3]-((PxCoords[0])*self.PixelShape[1])-0.5*self.PixelShape[1]
+            return shapely.geometry.Point((X,Y))
+        elif Type=="Polygone" : 
+            x1 = self.Extent[0]+((PxCoords[0]-1)*self.PixelShape[0])
+            x2 = self.Extent[0]+((PxCoords[0]-1)*self.PixelShape[0])+self.PixelShape[0]
+            y1 = self.Extent[3]-((PxCoords[1]-1)*self.PixelShape[1])
+            y2 = self.Extent[3]-((PxCoords[1]-1)*self.PixelShape[1])-self.PixelShape[1]
+            return shapely.geometry.Polygon([[x1,y1],[x2,y1],[x2,y2],[x1,y2]])
+        else : 
+            raise ValueError("This type : "+Type+" is not supported")
+    
+    ########################################
+    ## methodes d'acces aux pixels par groupe
+    ########################################
+    
+    def ScanLine(self,Geom) :
+        """
+        Fais passer une ligne qui remonte ligne par ligne le raster
+        NB : Geom doit etre de type shapely
+        retourne une selection du raster, soit un dictionnaire de type : PxCoords = Value
+        """
+        Step = self.PixelShape[1]
+        Intersected={}
+        MaxIter = self.shape[0]
+        StartX = self.Extent[0]
+        EndX = self.Extent[2]
+        StartY = self.Extent[1]+Step/2.0
+        #Bars =[]
+        #Xs=[]
+        #Ys=[]
+        #debut des iterations
+        for e in range(MaxIter) :
+            #creation de la ligne
+            Y = StartY + Step*e
+            TXT = "LINESTRING ("+str(StartX)+" "+str(Y)+","+str(EndX)+" "+str(Y)+")"
+            Line = shapely.wkt.loads(TXT)
+            #recuperation des points (intersections avec la geoemtries)
+            Inter = Geom.intersection(Line)
+            Name = Inter.geom_type
+            #print(Name)
+            if Name=="GeometryCollection" and len(Inter.geoms)==0 :
+                continue
+            elif Name=="MultiLineString" :
+                Lines = list(Inter.geoms)
+            elif Name=="LineString" :
+                Lines = [Inter]
+            elif Name=="Point" :
+                Coords = Inter.coords[0]
+                PxCoords = self.PxCoords(Coords)
+                Intersected[PxCoords] = self.Sample(Coords)
+                continue
+            #iteration sur ces points
+            for line in Lines :
+                #Bars.append(list(line.coords))
+                Start,End = GT.GetExtremites(line)
+                Coords1 = self.PxCoords(Start.coords[0])
+                Coords2 = self.PxCoords(End.coords[0])
+#                Xs+=[Start.x,End.x]
+#                Ys+=[Start.y,End.y]
+                #verfication pour les extremites
+                Center1 = self.PxGeom(Coords1)
+                Center2 = self.PxGeom(Coords2)
+#                Xs+=[Center1.x,Center2.x]
+#                Ys+=[Center1.y,Center2.y]
+                if Center1.intersects(Geom) : 
+                    StartCount=0
+                else : 
+                    StartCount=1
+                if Center2.intersects(Geom) : 
+                    EndCount=1
+                else : 
+                    EndCount=0
+                
+                LastPx = int(Coords2[1])-int(Coords1[1])
+                for i in range(StartCount,LastPx+EndCount,1) :
+                    X = Coords1[1]+i
+                    Intersected[(Coords2[0],X)]=self[Coords2[0]][X]
+                #Intersected[(Coords2[0],Coords2[1])] = self[Coords2[0]][Coords2[1]]
+#        print("StartingPoints : ")
+#        plt.scatter(Xs,Ys,c="g")
+#        lc = LineCollection(Bars,colors="b",linewidths=1)
+#        fig = plt.gcf()
+#        ax = fig.axes[0]
+#        ax.add_collection(lc)
+        return Intersected
+    
+    
+    def SetPixels(self,PixelSelection) : 
+        """
+        Permet d'assigner des valeurs aux pixels
+        """
+        Xs = []
+        Ys = []
+        Values = []
+        for key,value in PixelSelection : 
+            Xs.append(key[0])
+            Ys.append(key[1])
+            Values.append(value)
+        Idxs = (tuple(Xs),tuple(Ys))
+        self[Idxs] = Values
+    
+    ########################################
+    ## methode de dessin
+    ########################################
     
     def Plot(self,Color="viridis",Vlim=None) :
         if Vlim is None : 
@@ -121,20 +264,20 @@ class MultiSpArray(object) :
         self.MaxSize=MaxSize
         self.__Arrays = defaultdict(lambda : None)
         #2) construire la structures des tuiles
-        NbWidth = int(self.Shape[0]/MaxSize)
-        if NbWidth*MaxSize<self.Shape[0] : 
+        NbWidth = int(self.Shape2[0]/MaxSize)
+        if NbWidth*MaxSize<self.Shape2[0] : 
             NbWidth+=1
-        NbHeight = int(self.Shape[1]/MaxSize)
-        if NbHeight*MaxSize<self.Shape[1] : 
+        NbHeight = int(self.Shape2[1]/MaxSize)
+        if NbHeight*MaxSize<self.Shape2[1] : 
             NbHeight+=1
         TotCol=0
         #iterer sur les colonnes pour delimiter les tuiles
         self.TileIndex = {}
         for i in range(NbWidth) : 
-            if TotCol+MaxSize<=self.Shape[0] : 
+            if TotCol+MaxSize<=self.Shape2[0] : 
                 AddCol = MaxSize
             else : 
-                AddCol = self.Shape[0]-TotCol
+                AddCol = self.Shape2[0]-TotCol
             StartCol = TotCol
             EndCol = TotCol + AddCol
             MinX = self.Extent[0]+self.PixelShape[0]*StartCol
@@ -142,10 +285,10 @@ class MultiSpArray(object) :
             #iterer sur les lignes pour delimiter les tuiles
             TotRow = 0
             for j in range(NbHeight) : 
-                if TotRow+MaxSize<=self.Shape[1] : 
+                if TotRow+MaxSize<=self.Shape2[1] : 
                     AddRow = MaxSize
                 else : 
-                    AddRow = self.Shape[1]-TotRow
+                    AddRow = self.Shape2[1]-TotRow
                 StartRow = TotRow
                 EndRow = TotRow+AddRow
                 MaxY = self.Extent[3]-self.PixelShape[1]*StartRow
@@ -157,9 +300,13 @@ class MultiSpArray(object) :
         #BBox demande par QIndex : (xmin,ymin,xmax,ymax)
         self.SpIndex = QdIndex(self.Extent)
         for key,value in self.TileIndex.items() : 
-            print(key)
             self.SpIndex.insert(key,value["Extent"])
             
+            
+    ########################################
+    ## methode d'access au rasters
+    ########################################
+    
     def GetRaster(self,Key,FromSource=True) : 
         """
         Permet d'acceder aux donnees presentes dans le raster source
@@ -169,20 +316,51 @@ class MultiSpArray(object) :
             Window = Coordinates["Pxs"]
             Extent = Coordinates["Extent"]
             DataSource = gdal.Open(self.Source)
-            print("key : "+str(Key))
-            print("Window : "+str(Window))
-            print("xoff="+str(Window[0]))
-            print("yoff="+str(Window[2]))
-            print("xsize="+str(Window[1]- Window[0]))
-            print("ysize="+str(Window[3]-Window[2]))
             Data = DataSource.ReadAsArray(xoff=Window[0],yoff=Window[2], xsize = Window[1]- Window[0], ysize = Window[3]-Window[2])
-            print(Data)
+            #print(Data)
             Array = SpArray(Data,self.Crs,Extent)
             del DataSource
         else : 
             Array = self.__Arrays[Key]
         return Array
     
+    ########################################
+    ## methode d'access au pixels
+    ########################################
+    
+    def IntersectedPixels(self,Geom,FromSource=True) : 
+        """
+        Geom doit etre une geometrie valide de type shapely
+        renvoit une selection de pixel triee par tuile :  CoordTile : {CoordPixel:value}
+        """
+        Extent = Geom.bounds
+        Dico = {}
+        for key in self.SpIndex.intersect(Extent) : 
+            Raster = self.GetRaster(key,FromSource=FromSource)
+            Pxs = Raster.ScanLine(Geom)
+            Dico[key] = Pxs
+        return Dico
+    
+    def SetPixels(self,PixelSelection,FromSource=True) : 
+        """
+        Permet d'assigner des valeurs aux pixels
+        """
+        for key,Dico in PixelSelection.items() : 
+            Raster = self.GetRaster(key,FromSource=FromSource)
+            Raster.SetPixels(Dico)
+            
+    def Sample(self,Coords,FromSource=True) : 
+        """
+        Permet d'extraire la valeur d'un pixel a certaine coordonnees
+        """
+        Extent = [Coords[0],Coords[1],Coords[0],Coords[1]]
+        for key in self.SpIndex.intersect(Extent) : 
+            Raster = self.GetRaster(key,FromSource=FromSource)
+            return Raster.Sample(Coords)
+    
+    ########################################
+    ## methode de dessin
+    ########################################
     
     def PlotGrid(self,LineColor="g",LineWidth=2) : 
         """
@@ -199,8 +377,6 @@ class MultiSpArray(object) :
         ax.set_xlim(self.Extent[0],self.Extent[2])
         ax.set_ylim(self.Extent[1],self.Extent[3])
         plt.show()
-            
-            
             
         
     def Plot(self,Extent=None,FromSource=True) :
@@ -230,10 +406,73 @@ class MultiSpArray(object) :
    
 ################################
 #Tests !
-        
+
+
 if __name__=="__main__" : 
+    
+    import time
+    
+    def timing(f):
+        def wrap(*args):
+            time1 = time.time()
+            ret = f(*args)
+            time2 = time.time()
+            print('{:s} function took {:.3f} ms'.format(f.__name__, (time2-time1)*1000.0))
+    
+            return ret
+        return wrap
+    
+    def PlotPoly(Poly,LineColor="r",LineWidth=1) :
+        Lines=[list(Poly.boundary.coords)]
+        lc = LineCollection(Lines,colors=LineColor,linewidths=LineWidth)
+        fig = plt.gcf()
+        ax = fig.axes[0]
+        ax.add_collection(lc)
+        plt.show()
+          
+    
+    @timing
+    def test() : 
+        Raster1.IntersectedPixels(Poly)
+    
+#    Arr1=np.array([range(10) for e in range(10)])
+#    Raster1 = SpArray(data=Arr1,Extent=(0,0,100,100),Src="")
+#    Poly = shapely.wkt.loads("Polygon ((34 20.5, 150 20.5, 75.2 30, 34 50.2, 34 20.5))")
+#    Pxs = Raster1.ScanLine(Poly)
+#    Raster1.Plot()
+#    Xs=[]
+#    Ys=[]
+#    for Coord in Pxs.keys() : 
+#        Pt = Raster1.PxGeom(Coord,Type="Point")
+#        Xs.append(Pt.coords[0][0])
+#        Ys.append(Pt.coords[0][1])
+#    fig = plt.gcf()
+#    plt.scatter(Xs,Ys,c="r")
+#    PlotPoly(Poly)
+    
+    Poly = shapely.wkt.loads("Polygon ((654666.14606649207416922 6861235.97581147402524948, 654588.73020110744982958 6861178.4277345510199666, 654517.48020110744982958 6861069.49744608905166388, 654597.63645110744982958 6861114.71379224304109812, 654636.00183572282548994 6861177.05754224304109812, 654692.1797203382011503 6861096.90129224304109812, 654781.92731649207416922 6861160.6152345510199666, 654808.64606649207416922 6861243.511869166046381, 654716.84318187669850886 6861301.74504224304109812, 654663.40568187669850886 6861260.63927301205694675, 654666.14606649207416922 6861235.97581147402524948))")
     Link = r"L:\TEMP\BatiParis_TestRaster.tif"
-    Raster1 = MultiSpArray(100,Source=Link)
-    Raster1.Plot()
-    Raster1.PlotGrid(LineColor="r")
+    Raster1 = MultiSpArray(1000,Source=Link)
+#    Raster1.Plot()
+#    Raster1.PlotGrid(LineColor="r")
+#    
+#    print(Raster1.Sample((654673,6861062)))
+#    Key = list(Raster1.SpIndex.intersect([654673,6861062,654673,6861062]))[0]
+#    Raster = Raster1.GetRaster(Key)
+    
+    test()
+    
+#    Selection = Raster1.IntersectedPixels(Poly)
+#    Xs=[]
+#    Ys=[]
+#    for key,Dico in Selection.items() : 
+#        Raster = Raster1.GetRaster(key)
+#        for PxCoords in Dico.keys() : 
+#            Pt = Raster.PxGeom(PxCoords,Type="Point")
+#            Xs.append(Pt.coords[0][0])
+#            Ys.append(Pt.coords[0][1])
+#    fig = plt.gcf()
+#    plt.scatter(Xs,Ys)
+#    PlotPoly(Poly)
+    
     

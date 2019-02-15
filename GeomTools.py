@@ -25,3 +25,13 @@ def InExtent(Point,Extent) :
         return True
     else :
         return False
+    
+    
+    
+##################################################
+##fonctions utilitaires appliquee a des lignes
+##################################################
+def GetExtremites(Line) : 
+    Coords = Line.coords
+    C1,C2 = shapely.geometry.Point(Coords[0]),shapely.geometry.Point(Coords[1])
+    return (C1,C2)
