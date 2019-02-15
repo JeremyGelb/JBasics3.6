@@ -498,7 +498,7 @@ if __name__=="__main__" :
 #        Pt = Raster1.PxGeom(Coord,Type="Point")
 #        Xs.append(Pt.coords[0][0])
 #        Ys.append(Pt.coords[0][1])
-#    fig = plt.gcf()
+#    fig = plt.gcf()git 
 #    plt.scatter(Xs,Ys,c="r")
 #    PlotPoly(Poly)
     
