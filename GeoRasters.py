@@ -28,6 +28,14 @@ class ExtentError(Exception):
     pass
 
 
+class RasterIntegrityError(Exception):
+    """
+    Raise me when operations are performed on rasters that don't share there
+        -pixelshape
+        -crs
+    """
+    pass
+
 ##############################################################
 ## Definition d'une classe qui va gerer les extent
 ##############################################################
@@ -243,19 +251,35 @@ class SpArray(np.ndarray):
         return Copied
     
     
-    def SetPixels(self,PixelSelection) : 
+    def SetValues(self,Target,TempValue=-999) : 
         """
-        Permet d'assigner des valeurs aux pixels
+        Permet d'assigner les valeurs du raster provenant d'un autre raster dont les pixels se superposent parfaitement
         """
-        Xs = []
-        Ys = []
-        Values = []
-        for key,value in PixelSelection : 
-            Xs.append(key[0])
-            Ys.append(key[1])
-            Values.append(value)
-        Idxs = (tuple(Xs),tuple(Ys))
-        self[Idxs] = Values
+        Inter = self.Extent.Geom.intersection(Target.Extent.Geom)
+        
+        OldPixels = self.ScanLine(Inter,TempValue,Reverse=True)
+        NewPixels = Target.ScanLine(Inter,TempValue,Reverse=True)
+        Idx1 = np.where(OldPixels==TempValue)
+        Idx2 = np.where(NewPixels==TempValue)
+        print(Idx1)
+        print(Idx2)
+        OldPixels[Idx1[0],Idx1[1]] = Target[Idx2[0],Idx2[1]]
+        return OldPixels
+        
+    
+#    def SetPixels(self,PixelSelection) : 
+#        """
+#        Permet d'assigner des valeurs aux pixels
+#        """
+#        Xs = []
+#        Ys = []
+#        Values = []
+#        for key,value in PixelSelection : 
+#            Xs.append(key[0])
+#            Ys.append(key[1])
+#            Values.append(value)
+#        Idxs = (tuple(Xs),tuple(Ys))
+#        self[Idxs] = Values
     
     ########################################
     ## methode de dessin
@@ -279,6 +303,7 @@ class MultiSpArray(object) :
         Pour creer un Multi Array, deux option possibles : 
             -Definir une source, et alors toutes les meta donnees proviennent de cette source
             -Definir les meta donnees a la main ainsi que la valeur de defaut
+            NB : Maxsize is th emaximum possible size for a tile in pixels
         
         Extent : une etendue specifie ainsi : (minX,minY,MaxX,MaxY)
         Crs : un wkt de projection tel que renvoye par osr
@@ -380,7 +405,7 @@ class MultiSpArray(object) :
     ## methode d'access au pixels
     ########################################
     
-    def IntersectedPixels(self,Geom,FromSource=True) : 
+    def IntersectedPixels(self,Geom,Default=np.nan,Reverse=False,FromSource=True) : 
         """
         Geom doit etre une geometrie valide de type shapely
         renvoit une selection de pixel triee par tuile :  CoordTile : SpArray
@@ -390,17 +415,17 @@ class MultiSpArray(object) :
         for key in self.SpIndex.intersect(Extent) : 
             Raster = self.GetRaster(key,FromSource=FromSource)
             if Raster.Extent.Geom.intersects(Geom)==True :
-                Pxs = Raster.ScanLine(Geom)
+                Pxs = Raster.ScanLine(Geom,Default,Reverse)
                 Dico[key] = Pxs
         return Dico
     
-    def SetPixels(self,PixelSelection,FromSource=True) : 
-        """
-        Permet d'assigner des valeurs aux pixels
-        """
-        for key,Dico in PixelSelection.items() : 
-            Raster = self.GetRaster(key,FromSource=FromSource)
-            Raster.SetPixels(Dico)
+#    def SetPixels(self,PixelSelection,FromSource=True) : 
+#        """
+#        Permet d'assigner des valeurs aux pixels
+#        """
+#        for key,Dico in PixelSelection.items() : 
+#            Raster = self.GetRaster(key,FromSource=FromSource)
+#            Raster.SetPixels(Dico)
             
     def Sample(self,Coords,FromSource=True) : 
         """
@@ -447,7 +472,7 @@ class MultiSpArray(object) :
         for Raster in self.Iterate() : 
             Sum+=np.sum((Raster-Mean)**2)
             N += Raster.shape[0] * Raster.shape[1]
-        return Sum/N
+        return np.sqrt(Sum/N)
         
     
     ########################################
@@ -502,6 +527,25 @@ class MultiSpArray(object) :
         ax.set_ylim(Extent[1],Extent[3])
         plt.show()
         plt.colorbar()
+        
+        
+
+##############################################################
+## Fonctions de generations
+##############################################################
+        
+###########################
+##Fonction pour combiner plusieurs Array en 1 MultiArray    
+def CombineArray(Arrays, Default) : 
+    """
+    This function will combine single Arrays in a MultiArray that will be irregular
+    The missing part will be fill with the default value
+    NB : all the rasters must have the same projection and the same pixel size
+    if rasters are overlapping, the last value will be keeped
+    """
+    #### Recuperation de l'etendue totale
+    
+
    
 ################################
 #Tests !
@@ -533,13 +577,23 @@ if __name__=="__main__" :
     @timing
     def test() : 
         Raster1.IntersectedPixels(Poly)
-    
-    Arr1=np.array([range(10) for e in range(10)])
+        
+        
+    Arr1 = np.array([range(10) for e in range(10)])
     Raster1 = SpArray(data=Arr1,Extent=(0,0,100,100),Src="")
-    Poly = shapely.wkt.loads("Polygon ((34 20.5, 150 20.5, 75.2 30, 34 50.2, 34 20.5))")
-    Pxs1 = Raster1.ScanLine(Poly,Default=0)
-    Pxs2 = Raster1.ScanLine(Poly,Default=0,Reverse=True)
-    Pxs1.Plot()
+    
+    Arr2 = np.array([range(7) for e in range(7)])
+    Raster2 = SpArray(data=Arr2,Extent=(50,50,120,120),Src="")
+    Raster1.Plot()
+    Raster1.Extent.Plot()
+    Raster2.Plot()
+    Raster2.Extent.Plot()
+    Raster3 = Raster1.SetValues(Raster2)
+    Raster3.Plot()
+#    Poly = shapely.wkt.loads("Polygon ((34 20.5, 150 20.5, 75.2 30, 34 50.2, 34 20.5))")
+#    Pxs1 = Raster1.ScanLine(Poly,Default=0)
+#    Pxs2 = Raster1.ScanLine(Poly,Default=0,Reverse=True)
+#    Pxs1.Plot()
 #    Raster1.Plot()
 #    Xs=[]
 #    Ys=[]
@@ -553,18 +607,19 @@ if __name__=="__main__" :
     
 #    Poly = shapely.wkt.loads("Polygon ((654666.14606649207416922 6861235.97581147402524948, 654588.73020110744982958 6861178.4277345510199666, 654517.48020110744982958 6861069.49744608905166388, 654597.63645110744982958 6861114.71379224304109812, 654636.00183572282548994 6861177.05754224304109812, 654692.1797203382011503 6861096.90129224304109812, 654781.92731649207416922 6861160.6152345510199666, 654808.64606649207416922 6861243.511869166046381, 654716.84318187669850886 6861301.74504224304109812, 654663.40568187669850886 6861260.63927301205694675, 654666.14606649207416922 6861235.97581147402524948))")
 #    Link = r"L:\TEMP\BatiParis_TestRaster.tif"
-#    Raster1 = MultiSpArray(400,Source=Link)
-#    Raster1.Plot()
+#    Raster1 = MultiSpArray(100,Source=Link)
 #    Raster1.Plot()
 #    Raster1.PlotGrid(LineColor="r")
 #    
-#    print(Raster1.Sample((654673,6861062)))
-#    Key = list(Raster1.SpIndex.intersect([654673,6861062,654673,6861062]))[0]
-#    Raster = Raster1.GetRaster(Key)
-    
-#    test()
-    
-#    Selection = Raster1.IntersectedPixels(Poly)
+##    print(Raster1.Sample((654673,6861062)))
+##    Key = list(Raster1.SpIndex.intersect([654673,6861062,654673,6861062]))[0]
+##    Raster = Raster1.GetRaster(Key)
+#
+#    
+#    Selection = Raster1.IntersectedPixels(Poly,Default=0,Reverse=True)
+#    for key,Raster in Selection.items() : 
+#        Raster.Plot()
+    #Selection.Mean()
 #    Xs=[]
 #    Ys=[]
 #    for key,Dico in Selection.items() : 
