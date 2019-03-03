@@ -229,8 +229,10 @@ def spatial_filter(self,Geom,Methode="intersect") :
     """
     if Methode in ["intersect", "inside", "touche"] :
         #Partie 1 : prefilter avec cx 
-        xmin, ymin, xmax, ymax = GetExtent(Geom)
-        indexed = self.cx[xmin:xmax, ymin:ymax]
+        Index = self.sindex
+        indexed = self.iloc[list(Index.intersection(Geom.bounds))]
+        #xmin, ymin, xmax, ymax = GetExtent(Geom)
+        #indexed = self.cx[xmin:xmax, ymin:ymax]
         if Methode == "intersect" : 
             return indexed[indexed.intersects(Geom)]
         elif Methode == "touche" : 

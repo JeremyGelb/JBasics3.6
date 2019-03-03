@@ -45,6 +45,12 @@ def GetExtremites(Line,Tolerance=0.01) :
     C1,C2 = shapely.geometry.Point(Coords[0]),shapely.geometry.Point(Coords[-1])
     return (C1,C2)
 
+def GetPartsOfLine(Line) : 
+    """
+    Permet de recuperer toutes les lignes composant une line string
+    """
+    Coords = list(Line.coords)
+    return [shapely.geometry.LineString([Coords[e],Coords[e+1]]) for e in range(len(Coords)-1)]
 
 def ReverseLine(Line) : 
     """
@@ -82,3 +88,48 @@ def LineTouches(L1,L2,Tolerance=0.01):
         return True
     else : 
         return False
+
+
+
+def SplitLineByDist(Line,Distance) : 
+    """
+    Fonction permettant de decouper une ligne en repetant une certaine distance
+    """
+    if Line.length < Distance : 
+        return [Line]
+    else : 
+        CumulDist = Distance
+        CutPts = []
+        ## recuperation des points de decoupage
+        while CumulDist<Line.length : 
+            CutPts.append((Line.interpolate(CumulDist),CumulDist,True))
+            CumulDist+=Distance
+        #recuperation des vrais points
+        Coords = list(Line.coords)
+        RealPts = [(shapely.geometry.Point(Coords.pop(0)),0,False)]
+        CumulDist = 0
+        for Coord in Coords : 
+            P1 = RealPts[-1][0]
+            P2 = shapely.geometry.Point(Coord)
+            Ecart = P1.distance(P2)
+            CumulDist+=Ecart
+            RealPts.append((P2,CumulDist,False))
+        #generation des segments
+        AllPts = RealPts+CutPts
+        AllPts.sort(key=lambda x : x[1])
+        Segments = []
+        Pts = []
+        for Pt,Dist,IsCut in AllPts : 
+            if IsCut==False : 
+                Pts.append(Pt)
+            else : 
+                Pts.append(Pt)
+                Segments.append(shapely.geometry.LineString([(P.x,P.y) for P in Pts]))
+                Pts = [Pt]
+        return Segments
+                
+            
+        
+        
+            
+    
