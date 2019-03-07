@@ -65,6 +65,29 @@ class GeoExtent(object) :
         else : 
             raise ValueError("This format is not supported by the List methode")
     
+    def Merge(self,Extents) : 
+        """
+        Permet de combiner plusieurs extents avec celle-ci !
+        """
+        Extents.append(self)
+        MinX = float("inf")
+        MinY = float("inf")
+        MaxX = float("-inf")
+        MaxY = float("-inf")
+        for E in Extents : 
+            minx,miny,maxx,maxy = E.List()
+            print(E.List())
+            if minx<MinX : 
+                MinX=minx
+            if miny<MinY : 
+                MinY=miny
+            if maxx>MaxX : 
+                MaxX=maxx
+            if maxy>MaxY : 
+                MaxY=maxy
+        return GeoExtent(MinX,MinY,MaxX,MaxY)
+            
+    
     def Plot(self,LineColor="r",LineWidth=1) :
         """
         Plot the extent as a line in the current plot or create a new one
@@ -319,6 +342,7 @@ class MultiSpArray(object) :
             self.PixelShape = PixelShape
             self.Crs=Crs
             self.Default=Default
+            self.Shape2 = [self.Extent.Width/PixelShape[0],self.Extent.Height/PixelShape[1]]
         else : 
             DataSource = gdal.Open(Source)
             self.Crs = DataSource.GetProjection()
@@ -343,6 +367,7 @@ class MultiSpArray(object) :
         TotCol=0
         #iterer sur les colonnes pour delimiter les tuiles
         self.TileIndex = {}
+        self.TileShape = (NbWidth,NbHeight)
         for i in range(NbWidth) : 
             if TotCol+MaxSize<=self.Shape2[0] : 
                 AddCol = MaxSize
@@ -377,10 +402,41 @@ class MultiSpArray(object) :
     ## methode d'access au rasters
     ########################################
     
+    def Merge(self,FromSource=True) : 
+        """
+        Permet de fusionner les differentes tuiles pour ne former qu'un spArray
+        NB : attention a ne pas depasser la memoire disponible
+        """
+        Cols = []
+        for i in range(self.TileShape[0]) : 
+            Col = []
+            for j in range(self.TileShape[1]) :
+                Raster = self.GetRaster((i,j),FromSource)
+                Col.append(Raster)
+            Cols.append(np.concatenate(Col,axis=0))
+        NewArray = np.concatenate(Cols,axis=1)
+        NewSpArray = SpArray(NewArray,self.Crs,self.Extent.List())
+        return NewSpArray
+        
+    
     def GetRaster(self,Key,FromSource=True) : 
         """
         Permet d'acceder aux donnees presentes dans le raster source
         """
+        if self.__Arrays[Key] is None and self.Source is None : 
+            Coordinates = self.TileIndex[Key]
+            Window = Coordinates["Pxs"]
+            Extent = Coordinates["Extent"]
+            xsize = Window[1]- Window[0]
+            ysize = Window[3]-Window[2]
+            Arr = np.full((ysize,xsize),self.Default)
+            SpArr = SpArray(Arr,self.Crs,Extent.List())
+            self.__Arrays[Key] = SpArr
+            return SpArr
+        
+        if self.Source is None and FromSource : 
+            raise ValueError("Impossible to use fromsource here because there is no source...")
+            
         if self.__Arrays[Key] is None or FromSource :
             Coordinates = self.TileIndex[Key]
             Window = Coordinates["Pxs"]
@@ -412,12 +468,32 @@ class MultiSpArray(object) :
         """
         Extent = Geom.bounds
         Dico = {}
+        Extents = []
+        Is=[]
+        Js=[]
+        #recuperation des raster intersectes
         for key in self.SpIndex.intersect(Extent) : 
+            Is.append(key[0])
+            Js.append(key[1])
             Raster = self.GetRaster(key,FromSource=FromSource)
             if Raster.Extent.Geom.intersects(Geom)==True :
                 Pxs = Raster.ScanLine(Geom,Default,Reverse)
                 Dico[key] = Pxs
-        return Dico
+                print(Pxs.Extent.List())
+                Extents.append(Pxs.Extent)
+        #calcul de l'etendue globale de l'intersection
+        print("step2")
+        MinI = min(Is)
+        MinJ = min(Js)
+        Ex1 = Extents.pop(0)
+        TotExt = Ex1.Merge(Extents)
+        print(TotExt.List())
+        NewArray = MultiSpArray(self.MaxSize,Source=None,Extent=TotExt.List(),PixelShape=self.PixelShape,Crs=self.Crs,Default=Default)
+        for key,Raster in Dico.items() : 
+            Newkey = (key[0]-MinI,key[1]-MinJ)
+            NewArray.__Arrays[Newkey]=Raster
+        
+        return NewArray
     
 #    def SetPixels(self,PixelSelection,FromSource=True) : 
 #        """
@@ -511,6 +587,7 @@ class MultiSpArray(object) :
         Mins=[]
         Maxs=[]
         for Key in Keys : 
+            print(Key)
             Raster = self.GetRaster(Key,FromSource)
             Arrays.append(Raster)
             Mins.append(np.min(Raster))
@@ -553,43 +630,43 @@ def CombineArray(Arrays, Default) :
 
 if __name__=="__main__" : 
     
-    import time
-    
-    def timing(f):
-        def wrap(*args):
-            time1 = time.time()
-            ret = f(*args)
-            time2 = time.time()
-            print('{:s} function took {:.3f} ms'.format(f.__name__, (time2-time1)*1000.0))
-    
-            return ret
-        return wrap
-    
-    def PlotPoly(Poly,LineColor="r",LineWidth=1) :
-        Lines=[list(Poly.boundary.coords)]
-        lc = LineCollection(Lines,colors=LineColor,linewidths=LineWidth)
-        fig = plt.gcf()
-        ax = fig.axes[0]
-        ax.add_collection(lc)
-        plt.show()
-          
-    
-    @timing
-    def test() : 
-        Raster1.IntersectedPixels(Poly)
-        
-        
-    Arr1 = np.array([range(10) for e in range(10)])
-    Raster1 = SpArray(data=Arr1,Extent=(0,0,100,100),Src="")
-    
-    Arr2 = np.array([range(7) for e in range(7)])
-    Raster2 = SpArray(data=Arr2,Extent=(50,50,120,120),Src="")
-    Raster1.Plot()
-    Raster1.Extent.Plot()
-    Raster2.Plot()
-    Raster2.Extent.Plot()
-    Raster3 = Raster1.SetValues(Raster2)
-    Raster3.Plot()
+#    import time
+#    
+#    def timing(f):
+#        def wrap(*args):
+#            time1 = time.time()
+#            ret = f(*args)
+#            time2 = time.time()
+#            print('{:s} function took {:.3f} ms'.format(f.__name__, (time2-time1)*1000.0))
+#    
+#            return ret
+#        return wrap
+#    
+#    def PlotPoly(Poly,LineColor="r",LineWidth=1) :
+#        Lines=[list(Poly.boundary.coords)]
+#        lc = LineCollection(Lines,colors=LineColor,linewidths=LineWidth)
+#        fig = plt.gcf()
+#        ax = fig.axes[0]
+#        ax.add_collection(lc)
+#        plt.show()
+#          
+#    
+#    @timing
+#    def test() : 
+#        Raster1.IntersectedPixels(Poly)
+#        
+#        
+#    Arr1 = np.array([range(10) for e in range(10)])
+#    Raster1 = SpArray(data=Arr1,Extent=(0,0,100,100),Src="")
+#    
+#    Arr2 = np.array([range(7) for e in range(7)])
+#    Raster2 = SpArray(data=Arr2,Extent=(50,50,120,120),Src="")
+#    Raster1.Plot()
+#    Raster1.Extent.Plot()
+#    Raster2.Plot()
+#    Raster2.Extent.Plot()
+#    Raster3 = Raster1.SetValues(Raster2)
+#    Raster3.Plot()
 #    Poly = shapely.wkt.loads("Polygon ((34 20.5, 150 20.5, 75.2 30, 34 50.2, 34 20.5))")
 #    Pxs1 = Raster1.ScanLine(Poly,Default=0)
 #    Pxs2 = Raster1.ScanLine(Poly,Default=0,Reverse=True)
@@ -605,9 +682,12 @@ if __name__=="__main__" :
 #    plt.scatter(Xs,Ys,c="r")
 #    PlotPoly(Poly)
     
-#    Poly = shapely.wkt.loads("Polygon ((654666.14606649207416922 6861235.97581147402524948, 654588.73020110744982958 6861178.4277345510199666, 654517.48020110744982958 6861069.49744608905166388, 654597.63645110744982958 6861114.71379224304109812, 654636.00183572282548994 6861177.05754224304109812, 654692.1797203382011503 6861096.90129224304109812, 654781.92731649207416922 6861160.6152345510199666, 654808.64606649207416922 6861243.511869166046381, 654716.84318187669850886 6861301.74504224304109812, 654663.40568187669850886 6861260.63927301205694675, 654666.14606649207416922 6861235.97581147402524948))")
-#    Link = r"L:\TEMP\BatiParis_TestRaster.tif"
-#    Raster1 = MultiSpArray(100,Source=Link)
+    Poly = shapely.wkt.loads("Polygon ((654666.14606649207416922 6861235.97581147402524948, 654588.73020110744982958 6861178.4277345510199666, 654517.48020110744982958 6861069.49744608905166388, 654597.63645110744982958 6861114.71379224304109812, 654636.00183572282548994 6861177.05754224304109812, 654692.1797203382011503 6861096.90129224304109812, 654781.92731649207416922 6861160.6152345510199666, 654808.64606649207416922 6861243.511869166046381, 654716.84318187669850886 6861301.74504224304109812, 654663.40568187669850886 6861260.63927301205694675, 654666.14606649207416922 6861235.97581147402524948))")
+    Link = r"I:\TEMP\BatiParis_TestRaster.tif"
+    Raster1 = MultiSpArray(100,Source=Link)
+    Merged = Raster1.Merge()
+    Raster1.Plot()
+    Merged.Plot()
 #    Raster1.Plot()
 #    Raster1.PlotGrid(LineColor="r")
 #    
@@ -616,7 +696,8 @@ if __name__=="__main__" :
 ##    Raster = Raster1.GetRaster(Key)
 #
 #    
-#    Selection = Raster1.IntersectedPixels(Poly,Default=0,Reverse=True)
+    Selection = Raster1.IntersectedPixels(Poly,Default=0,Reverse=False)
+    Selection.Plot(FromSource=False)
 #    for key,Raster in Selection.items() : 
 #        Raster.Plot()
     #Selection.Mean()
