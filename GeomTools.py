@@ -21,6 +21,74 @@ class TopologyError(Exception):
     pass
 
 
+
+##############################################################
+## Definition d'une classe qui va gerer les extent
+##############################################################
+class GeoExtent(object) :
+    
+    def __init__(self,Xmin,Ymin,Xmax,Ymax):
+        self.Xmin = Xmin
+        self.Xmax = Xmax
+        self.Ymin = Ymin
+        self.Ymax = Ymax
+        self.Width = abs(self.Xmax-self.Xmin)
+        self.Height = abs(self.Ymax-self.Ymin)
+        self.Geom = shapely.geometry.Polygon([(Xmin,Ymin),(Xmax,Ymin),(Xmax,Ymax),(Xmin,Ymax),(Xmin,Ymin)])
+        
+    def __repr__(self) : 
+        return "Xmin : {} - Xmax : {} - Ymin : {} - Ymax : {}".format(self.Xmin,self.Xmax,self.Ymin,self.Ymax)
+        
+    def List(self,Format=1) :
+        """
+        Format 1 : lower corner ; upper corner
+        Format 2 : XX ; YY
+        """
+        if Format==1 : 
+            return (self.Xmin,self.Ymin,self.Xmax,self.Ymax)
+        elif Format == 2 : 
+            return (self.Xmin,self.Xmax,self.Ymin,self.Ymax)
+        else : 
+            raise ValueError("This format is not supported by the List methode")
+    
+    def Merge(self,Extents) : 
+        """
+        Permet de combiner plusieurs extents avec celle-ci !
+        """
+        Extents.append(self)
+        MinX = float("inf")
+        MinY = float("inf")
+        MaxX = float("-inf")
+        MaxY = float("-inf")
+        for E in Extents : 
+            minx,miny,maxx,maxy = E.List()
+            print(E.List())
+            if minx<MinX : 
+                MinX=minx
+            if miny<MinY : 
+                MinY=miny
+            if maxx>MaxX : 
+                MaxX=maxx
+            if maxy>MaxY : 
+                MaxY=maxy
+        return GeoExtent(MinX,MinY,MaxX,MaxY)
+            
+    
+    def Plot(self,LineColor="r",LineWidth=1) :
+        """
+        Plot the extent as a line in the current plot or create a new one
+        """
+        try :
+            fig = plt.gcf()
+            ax = fig.axes[0]
+        except IndexError : 
+            fig,ax = plt.subplots()
+        lc = LineCollection([list(self.Geom.boundary.coords)],colors=LineColor,linewidths=LineWidth)
+        ax.add_collection(lc)
+        plt.show()
+        
+
+
 ##################################################
 ##fonctions utilitaires liees a l'entendue d'objet
 ##################################################
@@ -34,6 +102,26 @@ def InExtent(Point,Extent) :
         return True
     else :
         return False
+    
+def TotExtent(Geoms) : 
+    """
+    retourne l'etendue maximum des geometries
+    """
+    MaxX = float("-inf")
+    MaxY = float("-inf")
+    MinX = float("inf")
+    MinY = float("inf")
+    for Geom in Geoms : 
+        minx,miny,maxx,maxy = Geom.bounds
+        if minx<MinX : 
+            MinX = minx
+        if miny<MinY : 
+            MinY = miny
+        if maxx>MaxX : 
+            MaxX = maxx
+        if maxy > MaxY : 
+            MaxY = maxy
+    return GeoExtent(MinX,MinY,MaxX,MaxY)
     
     
     

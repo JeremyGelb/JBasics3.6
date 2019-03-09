@@ -15,8 +15,11 @@ from matplotlib.patches import Rectangle
 from matplotlib.collections import PatchCollection, LineCollection
 from collections import defaultdict
 import copy
-
+import math
 from libs.QuadTree import Index as QdIndex
+import GeomTools as GT
+from GeomTools import GeoExtent
+from GeoVectors import gpd
 
 ##############################################################
 ## Definition des erreurs que l'on peut rencontrer
@@ -36,71 +39,7 @@ class RasterIntegrityError(Exception):
     """
     pass
 
-##############################################################
-## Definition d'une classe qui va gerer les extent
-##############################################################
-class GeoExtent(object) :
-    
-    def __init__(self,Xmin,Ymin,Xmax,Ymax):
-        self.Xmin = Xmin
-        self.Xmax = Xmax
-        self.Ymin = Ymin
-        self.Ymax = Ymax
-        self.Width = abs(self.Xmax-self.Xmin)
-        self.Height = abs(self.Ymax-self.Ymin)
-        self.Geom = shapely.geometry.Polygon([(Xmin,Ymin),(Xmax,Ymin),(Xmax,Ymax),(Xmin,Ymax),(Xmin,Ymin)])
-        
-    def __repr__(self) : 
-        return "Xmin : {} - Xmax : {} - Ymin : {} - Ymax : ".format(self.Xmin,self.Xmax,self.Ymin,self.Ymax)
-        
-    def List(self,Format=1) :
-        """
-        Format 1 : lower corner ; upper corner
-        Format 2 : XX ; YY
-        """
-        if Format==1 : 
-            return (self.Xmin,self.Ymin,self.Xmax,self.Ymax)
-        elif Format == 2 : 
-            return (self.Xmin,self.Xmax,self.Ymin,self.Ymax)
-        else : 
-            raise ValueError("This format is not supported by the List methode")
-    
-    def Merge(self,Extents) : 
-        """
-        Permet de combiner plusieurs extents avec celle-ci !
-        """
-        Extents.append(self)
-        MinX = float("inf")
-        MinY = float("inf")
-        MaxX = float("-inf")
-        MaxY = float("-inf")
-        for E in Extents : 
-            minx,miny,maxx,maxy = E.List()
-            print(E.List())
-            if minx<MinX : 
-                MinX=minx
-            if miny<MinY : 
-                MinY=miny
-            if maxx>MaxX : 
-                MaxX=maxx
-            if maxy>MaxY : 
-                MaxY=maxy
-        return GeoExtent(MinX,MinY,MaxX,MaxY)
-            
-    
-    def Plot(self,LineColor="r",LineWidth=1) :
-        """
-        Plot the extent as a line in the current plot or create a new one
-        """
-        try :
-            fig = plt.gcf()
-            ax = fig.axes[0]
-        except IndexError : 
-            fig,ax = plt.subplots()
-        lc = LineCollection([list(self.Geom.boundary.coords)],colors=LineColor,linewidths=LineWidth)
-        ax.add_collection(lc)
-        plt.show()
-        
+
         
 ##############################################################
 ## Classe centrale SpArray
@@ -137,6 +76,10 @@ class SpArray(np.ndarray):
         self.Extent = getattr(obj, 'Extent', None)
         #defining the other elements
         self.PixelShape = getattr(obj,'PixelShape', None)
+        
+        
+    def Clone(self) : 
+        return copy.deepcopy(self)
         
     ########################################
     ## methodes d'acces aux pixels individuels
@@ -290,19 +233,35 @@ class SpArray(np.ndarray):
         return OldPixels
         
     
-#    def SetPixels(self,PixelSelection) : 
-#        """
-#        Permet d'assigner des valeurs aux pixels
-#        """
-#        Xs = []
-#        Ys = []
-#        Values = []
-#        for key,value in PixelSelection : 
-#            Xs.append(key[0])
-#            Ys.append(key[1])
-#            Values.append(value)
-#        Idxs = (tuple(Xs),tuple(Ys))
-#        self[Idxs] = Values
+    def ArrayCoords(self) : 
+        """
+        Permet de recuperer deux Array, contenant les coordonnes X et Y des centres des pixels de cet Array
+        """
+        
+        def GetX(i,j) : 
+            return self.Extent.Xmin+((j)*self.PixelShape[0])+0.5*self.PixelShape[0]
+        def GetY(i,j) : 
+            return self.Extent.Ymax-((i)*self.PixelShape[1])-0.5*self.PixelShape[1]
+
+        X = np.fromfunction(GetX,self.shape,dtype=float)
+        Y = np.fromfunction(GetY,self.shape,dtype=float)
+        return SpArray(X,self.Src,self.Extent.List()),SpArray(Y,self.Src,self.Extent.List())
+        
+    ########################################
+    ## Methode d'analyses spatiales
+    ########################################
+    def KernelDensity(self,Points,Radius,Function) : 
+        """
+        Calcule la densite kernel
+        """
+        X,Y = self.ArrayCoords()
+        Kernels = self.Clone()
+        Kernels.fill(0)
+        for Pt in Points :
+            Distances = np.sqrt((X-Pt.x)**2+(Y-Pt.y)**2)
+            Kernel = Function(Distances,Radius)
+            Kernels = Kernels+Kernel
+        return Kernels
     
     ########################################
     ## methode de dessin
@@ -356,7 +315,7 @@ class MultiSpArray(object) :
         
         self.Source = Source
         self.MaxSize=MaxSize
-        self.__Arrays = defaultdict(lambda : None)
+        self._MemArray = defaultdict(lambda : None)
         #2) construire la structures des tuiles
         NbWidth = int(self.Shape2[0]/MaxSize)
         if NbWidth*MaxSize<self.Shape2[0] : 
@@ -397,7 +356,14 @@ class MultiSpArray(object) :
         for key,value in self.TileIndex.items() : 
             self.SpIndex.insert(key,value["Extent"].List())
             
-            
+    
+    def EmptyCopy(self,Default = 0) : 
+        """
+        retourne un multi array d'un format identique, sans source, avec une valeur par defaut
+        """
+        NewArray = MultiSpArray(self.MaxSize,Source=None,Extent=self.Extent.List(),PixelShape=self.PixelShape,Crs=self.Crs,Default=Default)
+        return NewArray
+       
     ########################################
     ## methode d'access au rasters
     ########################################
@@ -423,7 +389,7 @@ class MultiSpArray(object) :
         """
         Permet d'acceder aux donnees presentes dans le raster source
         """
-        if self.__Arrays[Key] is None and self.Source is None : 
+        if self._MemArray[Key] is None and self.Source is None : 
             Coordinates = self.TileIndex[Key]
             Window = Coordinates["Pxs"]
             Extent = Coordinates["Extent"]
@@ -431,13 +397,13 @@ class MultiSpArray(object) :
             ysize = Window[3]-Window[2]
             Arr = np.full((ysize,xsize),self.Default)
             SpArr = SpArray(Arr,self.Crs,Extent.List())
-            self.__Arrays[Key] = SpArr
+            self._MemArray[Key] = SpArr
             return SpArr
         
         if self.Source is None and FromSource : 
             raise ValueError("Impossible to use fromsource here because there is no source...")
             
-        if self.__Arrays[Key] is None or FromSource :
+        if self._MemArray[Key] is None or FromSource :
             Coordinates = self.TileIndex[Key]
             Window = Coordinates["Pxs"]
             Extent = Coordinates["Extent"]
@@ -447,7 +413,7 @@ class MultiSpArray(object) :
             Array = SpArray(Data,self.Crs,Extent.List())
             del DataSource
         else : 
-            Array = self.__Arrays[Key]
+            Array = self._MemArray[Key]
         return Array
     
     def Iterate(self,FromSource=True) : 
@@ -491,7 +457,7 @@ class MultiSpArray(object) :
         NewArray = MultiSpArray(self.MaxSize,Source=None,Extent=TotExt.List(),PixelShape=self.PixelShape,Crs=self.Crs,Default=Default)
         for key,Raster in Dico.items() : 
             Newkey = (key[0]-MinI,key[1]-MinJ)
-            NewArray.__Arrays[Newkey]=Raster
+            NewArray._MemArray[Newkey]=Raster
         
         return NewArray
     
@@ -550,6 +516,25 @@ class MultiSpArray(object) :
             N += Raster.shape[0] * Raster.shape[1]
         return np.sqrt(Sum/N)
         
+    ########################################
+    ## methode d'analyse spatiale
+    ########################################
+    ########################################
+    ## Methode d'analyses spatiales
+    ########################################
+    def KernelDensity(self,Points,Radius,Function) : 
+        """
+        Calcule la densite kernel
+        """
+        #Etape1 : faire un arbre pour acceder plus vite aux points
+            
+        Copy = self.EmptyCopy(0)
+        for key in self.TileIndex.keys() : 
+            Raster = Copy.GetRaster(key)
+            OkPts = [Pt for Pt in Points if Pt.distance(Raster.Extent.Geom)<Radius]
+            Kernel = Raster.KernelDensity(OkPts,Radius,Function)
+            Copy._MemArray[key] = Kernel
+        return Copy
     
     ########################################
     ## methode de dessin
@@ -605,7 +590,73 @@ class MultiSpArray(object) :
         plt.show()
         plt.colorbar()
         
+    ########################################
+    ## methode d'export
+    ########################################
+    def Save(self,File,FromSource=True,Default=None) : 
+        """
+        Export the full raster to a file
+        """
+        if Default is None : 
+            Default = self.Default
+        Format = File.split(".")[1]
+        if Format == "tif" : 
+            self._TiffSave(File,Default,FromSource)
+        else : 
+            raise ValueError("The supported format are only : .tif")
         
+
+    def _TiffSave(self,File,Default,FromSource=True) : 
+        """
+        Methode pour exporter un gros raster avec Gdal en ecrivant chunk par chunk
+        """
+        #Creation de la source de donnees
+        RType = self.GetRaster((0,0)).dtype
+        if RType is np.dtype('float64') : 
+            Type = gdal.GDT_Float64
+        elif RType is np.dtype('float32') : 
+            Type = gdal.GDT_Float32
+        elif RType is np.dtype('int32') :
+            Type = gdal.GDT_Integer32
+        elif RType is np.dtype('int64') :
+            Type = gdal.GDT_Integer64
+        else : 
+            raise ValueError("The type od the raster is not supported : "+str(RType))
+        
+        driver = gdal.GetDriverByName('GTiff')
+        DataSource = driver.Create(
+            File,
+            self.Shape2[0],  # xsize
+            self.Shape2[1],  # ysize
+            1,    # number of bands
+            Type,  # The datatype of the pixel values
+            options=[  # Format-specific creation options.
+                'TILED=YES',
+                'BIGTIFF=IF_SAFER',
+                'BLOCKXSIZE=256',  # must be a power of 2
+                'BLOCKYSIZE=256'   # also power of 2, need not match BLOCKXSIZE
+            ])
+        DataSource.SetGeoTransform((self.Extent.List()[0],self.PixelShape[0],0,self.Extent.List()[3],0,-self.PixelShape[1]))
+        DataSource.SetProjection(self.Crs)        
+        #DataSource.SetNoDataValue(-1)
+        #DataSource.fill(-1)
+        Band = DataSource.GetRasterBand(1)
+        Band.SetNoDataValue(Default)
+        #print("filling with default (may take a while)")
+        #Band.fill(Default)
+        #ecriture dans la source de donnees
+        #Window=((WindowMaxY,WindowMinY),(WindowMaxX,WindowMinX))
+        for key,window in self.TileIndex.items() :
+            Array = self.GetRaster(key,FromSource)
+            #print(Array)
+            Window = window["Pxs"]
+            #"Pxs":[int(StartCol),int(EndCol),int(StartRow),int(EndRow)]
+            #print(Array.shape)
+            #print((Window[0],Window[3]))
+            Band.WriteArray(Array,xoff=Window[0],yoff=Window[2])
+        Band.FlushCache()
+        Band=None
+        DataSource=None
 
 ##############################################################
 ## Fonctions de generations
@@ -621,9 +672,30 @@ def CombineArray(Arrays, Default) :
     if rasters are overlapping, the last value will be keeped
     """
     #### Recuperation de l'etendue totale
-    
 
-   
+
+###########################
+##Fonction pour generer une densite de type Kernel
+def InverseLogDistance(Dists,BandWidth) : 
+    Values =  1.0/np.log(Dists)
+    Values[Dists>BandWidth] = 0
+    return Values
+
+def GaussianDistance(Dists,BandWidth) : 
+    Z = Dists / float(BandWidth)
+    Values = (2*math.pi)**(0.5)*np.exp(-1*(Z)**2)
+    Values[Dists>BandWidth] = 0
+    return Values
+
+def QuadraticDistance(Dists,BandWidth) : 
+    Z = Dists / float(BandWidth)
+    Values =  (15.0/16.0)*(1-Z**2)**2
+    Values[Dists>BandWidth] = 0
+    return Values
+    
+        
+    
+    
 ################################
 #Tests !
 
@@ -685,19 +757,31 @@ if __name__=="__main__" :
     Poly = shapely.wkt.loads("Polygon ((654666.14606649207416922 6861235.97581147402524948, 654588.73020110744982958 6861178.4277345510199666, 654517.48020110744982958 6861069.49744608905166388, 654597.63645110744982958 6861114.71379224304109812, 654636.00183572282548994 6861177.05754224304109812, 654692.1797203382011503 6861096.90129224304109812, 654781.92731649207416922 6861160.6152345510199666, 654808.64606649207416922 6861243.511869166046381, 654716.84318187669850886 6861301.74504224304109812, 654663.40568187669850886 6861260.63927301205694675, 654666.14606649207416922 6861235.97581147402524948))")
     Link = r"I:\TEMP\BatiParis_TestRaster.tif"
     Raster1 = MultiSpArray(100,Source=Link)
-    Merged = Raster1.Merge()
-    Raster1.Plot()
-    Merged.Plot()
+    Raster1.Save(r"I:\TEMP\BatiParis_TestRaster_copied.tif",FromSource=True,Default=-999)
+#    Merged = Raster1.Merge()
 #    Raster1.Plot()
-#    Raster1.PlotGrid(LineColor="r")
+#    Merged.Plot()
+#    X,Y = Merged.ArrayCoords()
+#    X.Plot()
+#    Y.Plot()
+#    Center = Poly.centroid
+#    Centercoords = (Center.x,Center.y)
+#    Distance = np.sqrt((X-Centercoords[0])**2+(Y-Centercoords[1])**2)
 #    
-##    print(Raster1.Sample((654673,6861062)))
-##    Key = list(Raster1.SpIndex.intersect([654673,6861062,654673,6861062]))[0]
-##    Raster = Raster1.GetRaster(Key)
-#
-#    
-    Selection = Raster1.IntersectedPixels(Poly,Default=0,Reverse=False)
-    Selection.Plot(FromSource=False)
+#    #K1 = KernelDensity(Merged,[Poly.centroid],100,GaussianDistance)
+#    #K2 = KernelDensity(Merged,[Poly.centroid],100,InverseLogDistance)
+#    K3 = Merged.KernelDensity([Poly.centroid],100,QuadraticDistance)
+#    K4 = Raster1.KernelDensity([Poly.centroid],100,QuadraticDistance)
+##    Raster1.Plot()
+##    Raster1.PlotGrid(LineColor="r")
+##    
+###    print(Raster1.Sample((654673,6861062)))
+###    Key = list(Raster1.SpIndex.intersect([654673,6861062,654673,6861062]))[0]
+###    Raster = Raster1.GetRaster(Key)
+##
+##    
+#    Selection = Raster1.IntersectedPixels(Poly,Default=0,Reverse=False)
+#    Selection.Plot(FromSource=False)
 #    for key,Raster in Selection.items() : 
 #        Raster.Plot()
     #Selection.Mean()

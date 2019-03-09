@@ -16,6 +16,7 @@ import threading
 import queue as Queue
 import sqlite3
 import os
+from GeomTools import GeoExtent
 
 ###################################################
 ###################################################
@@ -73,7 +74,7 @@ def get_extent(self) :
     MaxX = np.max(Bounds["maxx"])
     MinY = np.min(Bounds["miny"])
     MaxY = np.max(Bounds["maxy"])
-    return (MinX, MaxX, MinY, MaxY)
+    return GeoExtent(MinX,MinY,MaxX, MaxY)
 
 gpd.geodataframe.GeoDataFrame.Extent = property(get_extent)
 #############################################
