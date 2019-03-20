@@ -20,6 +20,7 @@ from libs.QuadTree import Index as QdIndex
 import GeomTools as GT
 from GeomTools import GeoExtent
 from GeoVectors import gpd
+from tqdm import tqdm
 
 ##############################################################
 ## Definition des erreurs que l'on peut rencontrer
@@ -169,6 +170,7 @@ class SpArray(np.ndarray):
             #recuperation des points (intersections avec la geoemtries)
             Inter = Geom.intersection(Line)
             Name = Inter.geom_type
+            Lines=[]
             #print(Name)
             if Name=="GeometryCollection" and len(Inter.geoms)==0 :
                 continue
@@ -184,29 +186,30 @@ class SpArray(np.ndarray):
                 #Intersected[PxCoords] = self.Sample(Coords)
                 continue
             #iteration sur ces points
-            for line in Lines :
-                #Bars.append(list(line.coords))
-                Start,End = GT.GetExtremites(line)
-                Coords1 = self.PxCoords(Start.coords[0])
-                Coords2 = self.PxCoords(End.coords[0])
-                #verfication pour les extremites
-                Center1 = self.PxGeom(Coords1)
-                Center2 = self.PxGeom(Coords2)
-                if Center1.intersects(Geom) : 
-                    StartCount=0
-                else : 
-                    StartCount=1
-                if Center2.intersects(Geom) : 
-                    EndCount=1
-                else : 
-                    EndCount=0
-                
-                LastPx = int(Coords2[1])-int(Coords1[1])
-                for i in range(StartCount,LastPx+EndCount,1):
-                    X = Coords1[1]+i
-                    As.append(Coords2[0])
-                    Bs.append(X)
-                    #Intersected[(Coords2[0],X)]=self[Coords2[0]][X]
+            if len(Lines)>0 :
+                for line in Lines :
+                    #Bars.append(list(line.coords))
+                    Start,End = GT.GetExtremites(line)
+                    Coords1 = self.PxCoords(Start.coords[0])
+                    Coords2 = self.PxCoords(End.coords[0])
+                    #verfication pour les extremites
+                    Center1 = self.PxGeom(Coords1)
+                    Center2 = self.PxGeom(Coords2)
+                    if Center1.intersects(Geom) : 
+                        StartCount=0
+                    else : 
+                        StartCount=1
+                    if Center2.intersects(Geom) : 
+                        EndCount=1
+                    else : 
+                        EndCount=0
+                    
+                    LastPx = int(Coords2[1])-int(Coords1[1])
+                    for i in range(StartCount,LastPx+EndCount,1):
+                        X = Coords1[1]+i
+                        As.append(Coords2[0])
+                        Bs.append(X)
+                        #Intersected[(Coords2[0],X)]=self[Coords2[0]][X]
         mask = np.ones(self.shape,dtype=bool)
         Idxs = (tuple(As),tuple(Bs))
         mask[Idxs] = False
@@ -227,8 +230,6 @@ class SpArray(np.ndarray):
         NewPixels = Target.ScanLine(Inter,TempValue,Reverse=True)
         Idx1 = np.where(OldPixels==TempValue)
         Idx2 = np.where(NewPixels==TempValue)
-        print(Idx1)
-        print(Idx2)
         OldPixels[Idx1[0],Idx1[1]] = Target[Idx2[0],Idx2[1]]
         return OldPixels
         
@@ -250,17 +251,19 @@ class SpArray(np.ndarray):
     ########################################
     ## Methode d'analyses spatiales
     ########################################
-    def KernelDensity(self,Points,Radius,Function) : 
+    def KernelDensity(self,Points,Radius,Function,Weights = None) : 
         """
         Calcule la densite kernel
         """
+        if Weights is None : 
+            Weights = [1 for i in range(len(Points))]
         X,Y = self.ArrayCoords()
         Kernels = self.Clone()
         Kernels.fill(0)
-        for Pt in Points :
+        for Pt,W in zip(Points,Weights) :
             Distances = np.sqrt((X-Pt.x)**2+(Y-Pt.y)**2)
             Kernel = Function(Distances,Radius)
-            Kernels = Kernels+Kernel
+            Kernels = Kernels+(Kernel*W)
         return Kernels
     
     ########################################
@@ -438,22 +441,30 @@ class MultiSpArray(object) :
         Is=[]
         Js=[]
         #recuperation des raster intersectes
-        for key in self.SpIndex.intersect(Extent) : 
+        Keys = self.SpIndex.intersect(Extent)
+        if len(Keys)==0 : 
+            if self.Extent.Geom.intersects(Geom) == False : 
+                print("It looks like that your geometry doesn't intersect the raster...")
+                print(shapely.wkt.dumps(Geom))
+                raise ExtentError()
+            else : 
+                print("Congratulation ! you found a bug !")
+                print(shapely.wkt.dumps(Geom))
+                raise ValueError("No intersection with subraster but intersection with total extent...")
+        for key in Keys : 
             Is.append(key[0])
             Js.append(key[1])
             Raster = self.GetRaster(key,FromSource=FromSource)
             if Raster.Extent.Geom.intersects(Geom)==True :
                 Pxs = Raster.ScanLine(Geom,Default,Reverse)
                 Dico[key] = Pxs
-                print(Pxs.Extent.List())
                 Extents.append(Pxs.Extent)
+        
         #calcul de l'etendue globale de l'intersection
-        print("step2")
         MinI = min(Is)
         MinJ = min(Js)
         Ex1 = Extents.pop(0)
         TotExt = Ex1.Merge(Extents)
-        print(TotExt.List())
         NewArray = MultiSpArray(self.MaxSize,Source=None,Extent=TotExt.List(),PixelShape=self.PixelShape,Crs=self.Crs,Default=Default)
         for key,Raster in Dico.items() : 
             Newkey = (key[0]-MinI,key[1]-MinJ)
@@ -483,6 +494,22 @@ class MultiSpArray(object) :
     ## methodes de calcul de base
     ########################################
     
+    def Apply(self,Func,FromSource=True,**kwargs) : 
+        """
+        Methode de calcul s'appliquant a toute les tuiles les unes apres les autres...
+        renvoit un nouveau Multisparray
+        **kwargs : arguments passed to the Func
+        Func must have its first parameter be a SpArray
+        """
+        Copy = self.EmptyCopy(Default=0)
+        for Tile in tqdm(self.TileIndex.keys()) : 
+            Raster = self.GetRaster(Tile,FromSource)
+            Raster2 = Func(Raster,**kwargs)
+            Copy._MemArray[Tile] = Raster2
+        return Copy
+        
+        
+    
     def Mean(self) : 
         Sum = 0
         N = 0
@@ -498,6 +525,7 @@ class MultiSpArray(object) :
             if m>Max : 
                 Max = m
         return Max
+
     
     def Min(self) : 
         Min = float("inf")
@@ -522,17 +550,23 @@ class MultiSpArray(object) :
     ########################################
     ## Methode d'analyses spatiales
     ########################################
-    def KernelDensity(self,Points,Radius,Function) : 
+    def KernelDensity(self,Points,Radius,Function,Weights=None) : 
         """
         Calcule la densite kernel
         """
         #Etape1 : faire un arbre pour acceder plus vite aux points
-            
+        if Weights is None : 
+            Weights = [1 for i in range(len(Points))]
         Copy = self.EmptyCopy(0)
-        for key in self.TileIndex.keys() : 
+        for key in tqdm(self.TileIndex.keys()) : 
             Raster = Copy.GetRaster(key)
-            OkPts = [Pt for Pt in Points if Pt.distance(Raster.Extent.Geom)<Radius]
-            Kernel = Raster.KernelDensity(OkPts,Radius,Function)
+            OkPts = [] 
+            OkWeights = []
+            for Pt,W in zip(Points,Weights) : 
+                if Pt.distance(Raster.Extent.Geom)<Radius : 
+                    OkPts.append(Pt)
+                    OkWeights.append(W)
+            Kernel = Raster.KernelDensity(OkPts,Radius,Function,OkWeights)
             Copy._MemArray[key] = Kernel
         return Copy
     
@@ -572,7 +606,6 @@ class MultiSpArray(object) :
         Mins=[]
         Maxs=[]
         for Key in Keys : 
-            print(Key)
             Raster = self.GetRaster(Key,FromSource)
             Arrays.append(Raster)
             Mins.append(np.min(Raster))
@@ -593,44 +626,60 @@ class MultiSpArray(object) :
     ########################################
     ## methode d'export
     ########################################
-    def Save(self,File,FromSource=True,Default=None) : 
+    def Save(self,File,FromSource=True,NoValue=None,Type=None) : 
         """
         Export the full raster to a file
         """
-        if Default is None : 
-            Default = self.Default
+        if Type == "int32" : 
+            RType = gdal.GDT_Int32
+        elif Type == "int64" : 
+            RType = gdal.GDT_Int64
+        elif Type == "float32" : 
+            RType = gdal.GDT_Float32
+        elif Type == "float64" : 
+            RType = gdal.GDT_Float64
+        elif Type is None : 
+            RType = None
+            print("No value type was specified for this raster, we will try to get it from the first tile (maybe wrong)")
+        
+        if NoValue is None : 
+            if self.Default is not None :
+                print("NoValue is not setted, we will use the default value of the raster : "+str(self.Default))
+                NoValue = self.Default
+            else : 
+                raise ValueError("The NoValue is not setted and the default value is NONE, please provide a Default value to raster and a NoValue for saving")
         Format = File.split(".")[1]
         if Format == "tif" : 
-            self._TiffSave(File,Default,FromSource)
+            self._TiffSave(File,NoValue,FromSource,RType)
         else : 
             raise ValueError("The supported format are only : .tif")
         
 
-    def _TiffSave(self,File,Default,FromSource=True) : 
+    def _TiffSave(self,File,NoValue,FromSource=True,Type=None) : 
         """
         Methode pour exporter un gros raster avec Gdal en ecrivant chunk par chunk
         """
         #Creation de la source de donnees
-        RType = self.GetRaster((0,0)).dtype
-        if RType is np.dtype('float64') : 
-            Type = gdal.GDT_Float64
-        elif RType is np.dtype('float32') : 
-            Type = gdal.GDT_Float32
-        elif RType is np.dtype('int32') :
-            Type = gdal.GDT_Integer32
-        elif RType is np.dtype('int64') :
-            Type = gdal.GDT_Integer64
-        else : 
-            raise ValueError("The type od the raster is not supported : "+str(RType))
+        if Type is None :
+            RType = self.GetRaster((0,0),FromSource).dtype
+            if RType is np.dtype('float64') : 
+                Type = gdal.GDT_Float64
+            elif RType is np.dtype('float32') : 
+                Type = gdal.GDT_Float32
+            elif RType is np.dtype('int32') :
+                Type = gdal.GDT_Int32
+            elif RType is np.dtype('int64') :
+                Type = gdal.GDT_Int64
         
         driver = gdal.GetDriverByName('GTiff')
         DataSource = driver.Create(
             File,
-            self.Shape2[0],  # xsize
-            self.Shape2[1],  # ysize
+            int(self.Shape2[0]),  # xsize
+            int(self.Shape2[1]),  # ysize
             1,    # number of bands
             Type,  # The datatype of the pixel values
             options=[  # Format-specific creation options.
+                'COMPRESS=LZW',
                 'TILED=YES',
                 'BIGTIFF=IF_SAFER',
                 'BLOCKXSIZE=256',  # must be a power of 2
@@ -641,7 +690,7 @@ class MultiSpArray(object) :
         #DataSource.SetNoDataValue(-1)
         #DataSource.fill(-1)
         Band = DataSource.GetRasterBand(1)
-        Band.SetNoDataValue(Default)
+        Band.SetNoDataValue(NoValue)
         #print("filling with default (may take a while)")
         #Band.fill(Default)
         #ecriture dans la source de donnees

@@ -62,7 +62,6 @@ class GeoExtent(object) :
         MaxY = float("-inf")
         for E in Extents : 
             minx,miny,maxx,maxy = E.List()
-            print(E.List())
             if minx<MinX : 
                 MinX=minx
             if miny<MinY : 
@@ -186,12 +185,14 @@ def SplitLineByDist(Line,Distance) :
     if Line.length < Distance : 
         return [Line]
     else : 
-        CumulDist = Distance
+        CumulDist = 0
         CutPts = []
         ## recuperation des points de decoupage
         while CumulDist<Line.length : 
-            CutPts.append((Line.interpolate(CumulDist),CumulDist,True))
             CumulDist+=Distance
+            CutPts.append((Line.interpolate(CumulDist),CumulDist,True))
+            if Line.length-(CumulDist+Distance)<Distance : 
+                break
         #recuperation des vrais points
         Coords = list(Line.coords)
         RealPts = [(shapely.geometry.Point(Coords.pop(0)),0,False)]
@@ -214,6 +215,7 @@ def SplitLineByDist(Line,Distance) :
                 Pts.append(Pt)
                 Segments.append(shapely.geometry.LineString([(P.x,P.y) for P in Pts]))
                 Pts = [Pt]
+        Segments.append(shapely.geometry.LineString([(P.x,P.y) for P in Pts]))
         return Segments
                 
             
