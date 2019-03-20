@@ -91,16 +91,39 @@ class SpArray(np.ndarray):
         Renvoit la valeur du pixel au coordonnes indiquees si le pixel 
         se trouve dans l'etendue du raster, sinon, souleve une erreur
         """
-        if self.Extent.Geom.intersects(shapely.geometry.Point(Coords))==False : 
-            raise ExtentError("The point "+str(Coords)+" is not in the boundary of the raster : "+str(self.Extent))
-        #step1 : calculer la colonne dans laquelle on se trouve
-        Col =  int((Coords[0]-self.Extent[0])/self.PixelShape[0])
-        if Col == self.shape[0] : 
-            Col-=1
-        Row = self.shape[1]-int((Coords[1]-self.Extent[1])/self.PixelShape[1])
-        if Row == self.shape[1] : 
-            Row-=1
+        Row,Col = self.PxCoords(Coords)
         return self[Row,Col]
+    
+    def Samples(self,Coordinates = None, X = None, Y=None) :
+        """
+        Renvoit la valeur des pixels aux coordonnes indiquees si le pixel 
+        se trouve dans l'etendue du raster, sinon, renvoit np.nan
+        """
+        if Coordinates is not None :
+            Xs,Ys = zip(*Coords)
+            Xs = np.array(Xs)
+            Ys = np.array(Ys)
+        else : 
+            Xs = np.array(X)
+            Ys = np.array(Y)
+        print(Xs)
+        print(Ys)
+        
+        Cols = ((Xs-self.Extent.Xmin) / self.PixelShape[0]).astype(int)
+        Cols[Cols==self.shape[1]]-=1
+        
+        Rows = self.shape[0]-((Ys-self.Extent.Ymin)/self.PixelShape[1]).astype(int)
+        Rows[Rows==self.shape[0]]-=1
+        print(Rows)
+        print(Cols)
+        
+        PreValues = np.zeros(shape=Rows.shape)
+        PreValues[((Cols>=self.shape[1]) | (Rows>=self.shape[0]))] = np.nan
+        Values = self[(tuple(Rows[np.isnan(PreValues)==False]),tuple(Cols[np.isnan(PreValues)==False]))]
+        
+        PreValues[np.isnan(PreValues)==False] = Values
+        return PreValues
+        
     
     def PxCoords(self,Coords) : 
         """
@@ -706,6 +729,68 @@ class MultiSpArray(object) :
         Band.FlushCache()
         Band=None
         DataSource=None
+        
+        
+        
+##############################################################
+## Classe annexe Raster Mosaic
+#Permet d'acceder a un ensemble de raster de tailles et de resolutions differentes
+#Les traitements sont de ce fait limites
+#possibilite de generer un MultiArray si on le souhaite
+##############################################################          
+class MosaicRaster(object) : 
+    
+    def __init__(self,Rasters,Default=None) : 
+        self.Crs = Rasters[0].Src
+        self.Default = Default
+        Extents = [Raster.Extent for Raster in Rasters]
+        self.Extent = Extents[0].Merge(Extents)
+        
+        ## Generation d'un index spatial pour acceder aux raster
+        self.SpIndex = QdIndex(self.Extent.List())
+        self.Rasters={}
+        for i,Raster in enumerate(Rasters) : 
+            if Raster.Src == self.Crs :
+                self.SpIndex.insert(i,Raster.Extent.List())
+                self.Rasters[i]=Raster
+            else : 
+                raise ValueError('All the rasters do not have the same projection system')
+        
+    def Sample(self,Coords) : 
+        """
+        Permet de recuperer la valeur du raster en un point precis
+        """
+        Extent = [Coords[0],Coords[1],Coords[0],Coords[1]]
+        for key in self.SpIndex.intersect(Extent) : 
+            Raster = self.Rasters[key]
+            return Raster.Sample(Coords)
+        return self.Default
+        
+    def ToMultiArray(self,MaxSize) : 
+        """
+        Conversion vers un MultiArray !, toujours basee sur la resolution la plus petite
+        """
+        #### primo : recuperer la valeur de resolution la plus petite
+        Rez = float("inf")
+        Format = ()
+        for Raster in self.Rasters.values() : 
+            Px = Raster.PixelShape[0] * Raster.PixelShape[1]
+            if Rez>Px : 
+                Rez = Px
+                Format = Raster.PixelShape
+                
+        #### deuxio : creer le MultiArray qui recevra cela
+        MultiArray = MultiSpArray(MaxSize=MaxSize,Source=None,Extent=self.Extent.List(),PixelShape=Format,Crs=self.Crs,Default=self.Default)
+        
+        #### troisio : completer ce foutu array
+        for Raster in MultiArray.Iterate() : 
+            Xs,Ys = Raster.ArrayCoords()
+            Fx = Xs.flattent()
+            Fy = Ys.flatten()
+            for key in self.SpIndex.intersect(Raster.Extent.Geom.List()) : 
+                Raster2 = self.Rasters[key]
+                Values = Raster2.Samples(X=Fx,Y=Fy)
+                Values = Values.reshape(Xs.shape)
 
 ##############################################################
 ## Fonctions de generations
@@ -804,9 +889,11 @@ if __name__=="__main__" :
 #    PlotPoly(Poly)
     
     Poly = shapely.wkt.loads("Polygon ((654666.14606649207416922 6861235.97581147402524948, 654588.73020110744982958 6861178.4277345510199666, 654517.48020110744982958 6861069.49744608905166388, 654597.63645110744982958 6861114.71379224304109812, 654636.00183572282548994 6861177.05754224304109812, 654692.1797203382011503 6861096.90129224304109812, 654781.92731649207416922 6861160.6152345510199666, 654808.64606649207416922 6861243.511869166046381, 654716.84318187669850886 6861301.74504224304109812, 654663.40568187669850886 6861260.63927301205694675, 654666.14606649207416922 6861235.97581147402524948))")
-    Link = r"I:\TEMP\BatiParis_TestRaster.tif"
+    Link = r"C:\Users\gelbj\OneDrive\Bureau\TEMP\BatiParis_TestRaster.tif"
     Raster1 = MultiSpArray(100,Source=Link)
-    Raster1.Save(r"I:\TEMP\BatiParis_TestRaster_copied.tif",FromSource=True,Default=-999)
+    Merged = Raster1.Merge()
+    Values = Merged.Samples([(654666.37687724,6861057.18988329),(654759.88878528,6861011.09557013),(654665.27414248,6860982.64501320),(654834.21310841,6861013.30103966),(654581.68684732,6860983.30665406),(654704.53150010,6861017.71197872)])
+    #Raster1.Save(r"I:\TEMP\BatiParis_TestRaster_copied.tif",FromSource=True,Default=-999)
 #    Merged = Raster1.Merge()
 #    Raster1.Plot()
 #    Merged.Plot()
