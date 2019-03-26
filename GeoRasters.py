@@ -94,28 +94,26 @@ class SpArray(np.ndarray):
         Row,Col = self.PxCoords(Coords)
         return self[Row,Col]
     
-    def Samples(self,Coordinates = None, X = None, Y=None) :
+    def Samples(self,Coordinates = None, Xs = None, Ys=None) :
         """
         Renvoit la valeur des pixels aux coordonnes indiquees si le pixel 
         se trouve dans l'etendue du raster, sinon, renvoit np.nan
         """
         if Coordinates is not None :
-            Xs,Ys = zip(*Coords)
+            Xs,Ys = zip(*Coordinates)
             Xs = np.array(Xs)
             Ys = np.array(Ys)
-        else : 
-            Xs = np.array(X)
-            Ys = np.array(Y)
-        print(Xs)
-        print(Ys)
+#        else : 
+#            Xs = np.array(X)
+#            Ys = np.array(Y)
+#        print(Xs)
+#        print(Ys)
         
         Cols = ((Xs-self.Extent.Xmin) / self.PixelShape[0]).astype(int)
         Cols[Cols==self.shape[1]]-=1
         
         Rows = self.shape[0]-((Ys-self.Extent.Ymin)/self.PixelShape[1]).astype(int)
         Rows[Rows==self.shape[0]]-=1
-        print(Rows)
-        print(Cols)
         
         PreValues = np.zeros(shape=Rows.shape)
         PreValues[((Cols>=self.shape[1]) | (Rows>=self.shape[0]))] = np.nan
@@ -298,6 +296,87 @@ class SpArray(np.ndarray):
             plt.imshow(self,extent = self.Extent.List(Format=2),cmap=Color)
         else : 
             plt.imshow(self,extent = self.Extent.List(Format=2),cmap=Color,vmin=Vlim[0],vmax=Vlim[1])
+            
+            
+    ########################################
+    ## methode d'export
+    ########################################
+    def Save(self,File,NoValue=None,Type=None) : 
+        """
+        Export the full raster to a file
+        """
+        if Type == "int32" : 
+            RType = gdal.GDT_Int32
+        elif Type == "int64" : 
+            RType = gdal.GDT_Int64
+        elif Type == "float32" : 
+            RType = gdal.GDT_Float32
+        elif Type == "float64" : 
+            RType = gdal.GDT_Float64
+        elif Type is None : 
+            RType = None
+            print("No value type was specified for this raster, we will try to get it from the first tile (maybe wrong)")
+        
+        if NoValue is None : 
+            if self.Default is not None :
+                print("NoValue is not setted, we will use the default value of the raster : "+str(self.Default))
+                NoValue = self.Default
+            else : 
+                raise ValueError("The NoValue is not setted and the default value is NONE, please provide a Default value to raster and a NoValue for saving")
+        Format = File.split(".")[1]
+        if Format == "tif" : 
+            self._TiffSave(File,NoValue,RType)
+        else : 
+            raise ValueError("The supported format are only : .tif")
+        
+
+    def _TiffSave(self,File,NoValue,Type=None) : 
+        """
+        Methode pour exporter un gros raster avec Gdal en ecrivant chunk par chunk
+        """
+        #Creation de la source de donnees
+        if Type is None :
+            RType = self.dtype
+            if RType is np.dtype('float64') : 
+                Type = gdal.GDT_Float64
+            elif RType is np.dtype('float32') : 
+                Type = gdal.GDT_Float32
+            elif RType is np.dtype('int32') :
+                Type = gdal.GDT_Int32
+            elif RType is np.dtype('int64') :
+                Type = gdal.GDT_Int64
+        
+        driver = gdal.GetDriverByName('GTiff')
+        DataSource = driver.Create(
+            File,
+            int(self.shape[1]),  # xsize
+            int(self.shape[0]),  # ysize
+            1,    # number of bands
+            Type,  # The datatype of the pixel values
+            options=[  # Format-specific creation options.
+                'COMPRESS=LZW',
+                'TILED=YES',
+                'BIGTIFF=IF_SAFER',
+                'BLOCKXSIZE=256',  # must be a power of 2
+                'BLOCKYSIZE=256'   # also power of 2, need not match BLOCKXSIZE
+            ])
+        DataSource.SetGeoTransform((self.Extent.List()[0],self.PixelShape[0],0,self.Extent.List()[3],0,-self.PixelShape[1]))
+        DataSource.SetProjection(self.Crs)
+        print(DataSource.RasterXSize,DataSource.RasterYSize)
+        #DataSource.SetNoDataValue(-1)
+        #DataSource.fill(-1)
+        Band = DataSource.GetRasterBand(1)
+        Band.SetNoDataValue(NoValue)
+        #print("filling with default (may take a while)")
+        #Band.fill(Default)
+        #ecriture dans la source de donnees
+        #Window=((WindowMaxY,WindowMinY),(WindowMaxX,WindowMinX))
+        Window=[0,self.shape[0],0,self.shape[1]]
+        #"Pxs":[int(StartCol),int(EndCol),int(StartRow),int(EndRow)]
+        Band.WriteArray(self,xoff=Window[0],yoff=Window[2])
+        Band.FlushCache()
+        Band=None
+        DataSource=None
 
 
 ##############################################################
@@ -327,7 +406,7 @@ class MultiSpArray(object) :
             self.PixelShape = PixelShape
             self.Crs=Crs
             self.Default=Default
-            self.Shape2 = [self.Extent.Width/PixelShape[0],self.Extent.Height/PixelShape[1]]
+            self.Shape2 = [round(self.Extent.Width/PixelShape[0]),round(self.Extent.Height/PixelShape[1])]
         else : 
             DataSource = gdal.Open(Source)
             self.Crs = DataSource.GetProjection()
@@ -343,39 +422,78 @@ class MultiSpArray(object) :
         self.MaxSize=MaxSize
         self._MemArray = defaultdict(lambda : None)
         #2) construire la structures des tuiles
-        NbWidth = int(self.Shape2[0]/MaxSize)
-        if NbWidth*MaxSize<self.Shape2[0] : 
-            NbWidth+=1
-        NbHeight = int(self.Shape2[1]/MaxSize)
-        if NbHeight*MaxSize<self.Shape2[1] : 
-            NbHeight+=1
+#        NbWidth = int(self.Shape2[0]/MaxSize)
+#        if NbWidth*MaxSize<self.Shape2[0] : 
+#            NbWidth+=1
+#        NbHeight = int(self.Shape2[1]/MaxSize)
+#        if NbHeight*MaxSize<self.Shape2[1] : 
+#            NbHeight+=1
         TotCol=0
         #iterer sur les colonnes pour delimiter les tuiles
         self.TileIndex = {}
-        self.TileShape = (NbWidth,NbHeight)
-        for i in range(NbWidth) : 
-            if TotCol+MaxSize<=self.Shape2[0] : 
+        #self.TileShape = (NbWidth,NbHeight)
+        i=0
+        ContinueCol=True
+        while ContinueCol : 
+            if TotCol+MaxSize<self.Shape2[0] : 
+                AddCol = MaxSize
+            elif TotCol+MaxSize==self.Shape2[0] : 
+                ContinueCol=False
                 AddCol = MaxSize
             else : 
+                ContinueCol=False
                 AddCol = self.Shape2[0]-TotCol
             StartCol = TotCol
             EndCol = TotCol + AddCol
             MinX = self.Extent.Xmin+self.PixelShape[0]*StartCol
             MaxX = self.Extent.Xmin+self.PixelShape[0]*EndCol
             #iterer sur les lignes pour delimiter les tuiles
-            TotRow = 0
-            for j in range(NbHeight) : 
-                if TotRow+MaxSize<=self.Shape2[1] : 
+            ContinueRow=True
+            j=0
+            TotRow=0
+            while ContinueRow : 
+                if TotRow+MaxSize<self.Shape2[1] : 
                     AddRow = MaxSize
+                elif TotRow+MaxSize==self.Shape2[1] : 
+                    AddRow = MaxSize
+                    ContinueRow=False
                 else : 
                     AddRow = self.Shape2[1]-TotRow
+                    ContinueRow=False
                 StartRow = TotRow
                 EndRow = TotRow+AddRow
                 MaxY = self.Extent.Ymax-self.PixelShape[1]*StartRow
                 MinY = self.Extent.Ymax-self.PixelShape[1]*EndRow
                 self.TileIndex[(i,j)] = {"Extent":GeoExtent(MinX,MinY,MaxX,MaxY),"Pxs":[int(StartCol),int(EndCol),int(StartRow),int(EndRow)]}
                 TotRow+=AddRow
+                j+=1
+            i+=1
             TotCol+=AddCol
+        self.TileShape = (i,j)
+        
+#        for i in range(NbWidth) : 
+#            if TotCol+MaxSize<=self.Shape2[0] : 
+#                AddCol = MaxSize
+#            else : 
+#                AddCol = self.Shape2[0]-TotCol
+#            StartCol = TotCol
+#            EndCol = TotCol + AddCol
+#            MinX = self.Extent.Xmin+self.PixelShape[0]*StartCol
+#            MaxX = self.Extent.Xmin+self.PixelShape[0]*EndCol
+#            #iterer sur les lignes pour delimiter les tuiles
+#            TotRow = 0
+#            for j in range(NbHeight) : 
+#                if TotRow+MaxSize<=self.Shape2[1] : 
+#                    AddRow = MaxSize
+#                else : 
+#                    AddRow = self.Shape2[1]-TotRow
+#                StartRow = TotRow
+#                EndRow = TotRow+AddRow
+#                MaxY = self.Extent.Ymax-self.PixelShape[1]*StartRow
+#                MinY = self.Extent.Ymax-self.PixelShape[1]*EndRow
+#                self.TileIndex[(i,j)] = {"Extent":GeoExtent(MinX,MinY,MaxX,MaxY),"Pxs":[int(StartCol),int(EndCol),int(StartRow),int(EndRow)]}
+#                TotRow+=AddRow
+#            TotCol+=AddCol
         #Creer finalement l'index spatial
         #BBox demande par QIndex : (xmin,ymin,xmax,ymax)
         self.SpIndex = QdIndex(self.Extent.List())
@@ -482,6 +600,46 @@ class MultiSpArray(object) :
                 Pxs = Raster.ScanLine(Geom,Default,Reverse)
                 Dico[key] = Pxs
                 Extents.append(Pxs.Extent)
+        
+        #calcul de l'etendue globale de l'intersection
+        MinI = min(Is)
+        MinJ = min(Js)
+        Ex1 = Extents.pop(0)
+        TotExt = Ex1.Merge(Extents)
+        NewArray = MultiSpArray(self.MaxSize,Source=None,Extent=TotExt.List(),PixelShape=self.PixelShape,Crs=self.Crs,Default=Default)
+        for key,Raster in Dico.items() : 
+            Newkey = (key[0]-MinI,key[1]-MinJ)
+            NewArray._MemArray[Newkey]=Raster
+        
+        return NewArray
+    
+    def IntersectedTiles(self,Geom,Default=np.nan,FromSource=True) : 
+        """
+        Geom doit etre une geometrie valide de type shapely
+        renvoit une selection de pixel triee par tuile :  CoordTile : SpArray
+        """
+        Extent = Geom.bounds
+        Dico = {}
+        Extents = []
+        Is=[]
+        Js=[]
+        #recuperation des raster intersectes
+        Keys = self.SpIndex.intersect(Extent)
+        if len(Keys)==0 : 
+            if self.Extent.Geom.intersects(Geom) == False : 
+                print("It looks like that your geometry doesn't intersect the raster...")
+                print(shapely.wkt.dumps(Geom))
+                raise ExtentError()
+            else : 
+                print("Congratulation ! you found a bug !")
+                print(shapely.wkt.dumps(Geom))
+                raise ValueError("No intersection with subraster but intersection with total extent...")
+        for key in Keys : 
+            Is.append(key[0])
+            Js.append(key[1])
+            Raster = self.GetRaster(key,FromSource=FromSource)
+            Dico[key] = Raster
+            Extents.append(Raster.Extent)
         
         #calcul de l'etendue globale de l'intersection
         MinI = min(Is)
@@ -725,6 +883,9 @@ class MultiSpArray(object) :
             #"Pxs":[int(StartCol),int(EndCol),int(StartRow),int(EndRow)]
             #print(Array.shape)
             #print((Window[0],Window[3]))
+            print(key)
+            print(Window)
+            print(Array.shape)
             Band.WriteArray(Array,xoff=Window[0],yoff=Window[2])
         Band.FlushCache()
         Band=None
@@ -834,7 +995,7 @@ def QuadraticDistance(Dists,BandWidth) :
 #Tests !
 
 
-if __name__=="__main__" : 
+#if __name__=="__main__" : 
     
 #    import time
 #    
@@ -888,12 +1049,12 @@ if __name__=="__main__" :
 #    plt.scatter(Xs,Ys,c="r")
 #    PlotPoly(Poly)
     
-    Poly = shapely.wkt.loads("Polygon ((654666.14606649207416922 6861235.97581147402524948, 654588.73020110744982958 6861178.4277345510199666, 654517.48020110744982958 6861069.49744608905166388, 654597.63645110744982958 6861114.71379224304109812, 654636.00183572282548994 6861177.05754224304109812, 654692.1797203382011503 6861096.90129224304109812, 654781.92731649207416922 6861160.6152345510199666, 654808.64606649207416922 6861243.511869166046381, 654716.84318187669850886 6861301.74504224304109812, 654663.40568187669850886 6861260.63927301205694675, 654666.14606649207416922 6861235.97581147402524948))")
-    Link = r"C:\Users\gelbj\OneDrive\Bureau\TEMP\BatiParis_TestRaster.tif"
-    Raster1 = MultiSpArray(100,Source=Link)
-    Merged = Raster1.Merge()
-    Values = Merged.Samples([(654666.37687724,6861057.18988329),(654759.88878528,6861011.09557013),(654665.27414248,6860982.64501320),(654834.21310841,6861013.30103966),(654581.68684732,6860983.30665406),(654704.53150010,6861017.71197872)])
-    #Raster1.Save(r"I:\TEMP\BatiParis_TestRaster_copied.tif",FromSource=True,Default=-999)
+#    Poly = shapely.wkt.loads("Polygon ((654666.14606649207416922 6861235.97581147402524948, 654588.73020110744982958 6861178.4277345510199666, 654517.48020110744982958 6861069.49744608905166388, 654597.63645110744982958 6861114.71379224304109812, 654636.00183572282548994 6861177.05754224304109812, 654692.1797203382011503 6861096.90129224304109812, 654781.92731649207416922 6861160.6152345510199666, 654808.64606649207416922 6861243.511869166046381, 654716.84318187669850886 6861301.74504224304109812, 654663.40568187669850886 6861260.63927301205694675, 654666.14606649207416922 6861235.97581147402524948))")
+#    Link = r"C:\Users\gelbj\OneDrive\Bureau\TEMP\BatiParis_TestRaster.tif"
+#    Raster1 = MultiSpArray(100,Source=Link)
+#    Merged = Raster1.Merge()
+#    Values = Merged.Samples([(654666.37687724,6861057.18988329),(654759.88878528,6861011.09557013),(654665.27414248,6860982.64501320),(654834.21310841,6861013.30103966),(654581.68684732,6860983.30665406),(654704.53150010,6861017.71197872)])
+#    #Raster1.Save(r"I:\TEMP\BatiParis_TestRaster_copied.tif",FromSource=True,Default=-999)
 #    Merged = Raster1.Merge()
 #    Raster1.Plot()
 #    Merged.Plot()
