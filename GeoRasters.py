@@ -21,6 +21,18 @@ import GeomTools as GT
 from GeomTools import GeoExtent
 from GeoVectors import gpd
 from tqdm import tqdm
+import threading
+import queue as Queue
+
+
+###################################################
+###################################################
+#_______________________________fonctions utilitaires
+def Chunks(a, n):
+    k, m = divmod(len(a), n)
+    return (a[i * k + min(i, m):(i + 1) * k + min(i + 1, m)] for i in range(n))
+
+
 
 ##############################################################
 ## Definition des erreurs que l'on peut rencontrer
@@ -103,12 +115,7 @@ class SpArray(np.ndarray):
             Xs,Ys = zip(*Coordinates)
             Xs = np.array(Xs)
             Ys = np.array(Ys)
-#        else : 
-#            Xs = np.array(X)
-#            Ys = np.array(Y)
-#        print(Xs)
-#        print(Ys)
-        
+
         Cols = ((Xs-self.Extent.Xmin) / self.PixelShape[0]).astype(int)
         Cols[Cols==self.shape[1]]-=1
         
@@ -230,7 +237,6 @@ class SpArray(np.ndarray):
                         X = Coords1[1]+i
                         As.append(Coords2[0])
                         Bs.append(X)
-                        #Intersected[(Coords2[0],X)]=self[Coords2[0]][X]
         mask = np.ones(self.shape,dtype=bool)
         Idxs = (tuple(As),tuple(Bs))
         mask[Idxs] = False
@@ -239,6 +245,100 @@ class SpArray(np.ndarray):
         else :
             Copied[mask] = Default
         return Copied
+    
+    
+    def ScanLineMC(self,Geom,Default=np.nan,Reverse=False,Cores=2) : 
+        """
+        Idem que celui d'avant, mais en mode multithreading
+        """
+        
+        Step = self.PixelShape[1]
+        #Intersected={}
+        MaxIter = self.shape[0]
+        StartX = self.Extent.Xmin
+        EndX = self.Extent.Xmax
+        StartY = self.Extent.Ymin+Step/2.0
+        Copied = copy.deepcopy(self)
+        As = Queue.Queue()
+        Bs = Queue.Queue()
+        
+        Parts = Chunks(list(range(MaxIter)),Cores)
+        
+        def Worker(Args) : 
+            Iteration,Geom,Raster,StartY,StartX,EndX,A,B = Args
+            for e in Iteration :
+                #creation de la ligne
+                Y = StartY + Step*e
+                TXT = "LINESTRING ("+str(StartX)+" "+str(Y)+","+str(EndX)+" "+str(Y)+")"
+                Line = shapely.wkt.loads(TXT)
+                #recuperation des points (intersections avec la geoemtries)
+                Inter = Geom.intersection(Line)
+                Name = Inter.geom_type
+                Lines=[]
+                #print(Name)
+                if Name=="GeometryCollection" and len(Inter.geoms)==0 :
+                    continue
+                elif Name=="MultiLineString" :
+                    Lines = list(Inter.geoms)
+                elif Name=="LineString" :
+                    Lines = [Inter]
+                elif Name=="Point" :
+                    Coords = Inter.coords[0]
+                    PxCoords = Raster.PxCoords(Coords)
+                    A.put(PxCoords[0])
+                    B.put(PxCoords[1])
+                    #Intersected[PxCoords] = self.Sample(Coords)
+                    continue
+                #iteration sur ces points
+                if len(Lines)>0 :
+                    for line in Lines :
+                        #Bars.append(list(line.coords))
+                        Start,End = GT.GetExtremites(line)
+                        Coords1 = Raster.PxCoords(Start.coords[0])
+                        Coords2 = Raster.PxCoords(End.coords[0])
+                        #verfication pour les extremites
+                        Center1 = Raster.PxGeom(Coords1)
+                        Center2 = Raster.PxGeom(Coords2)
+                        if Center1.intersects(Geom) : 
+                            StartCount=0
+                        else : 
+                            StartCount=1
+                        if Center2.intersects(Geom) : 
+                            EndCount=1
+                        else : 
+                            EndCount=0
+                        
+                        LastPx = int(Coords2[1])-int(Coords1[1])
+                        for i in range(StartCount,LastPx+EndCount,1):
+                            X = Coords1[1]+i
+                            A.put(Coords2[0])
+                            B.put(X)
+        
+        jobs=[]
+        for part in Parts : 
+            p = threading.Thread(target = Worker, args=((part,Geom,self,StartY,StartX,EndX,As,Bs),))
+            p.start()
+            jobs.append(p)
+            
+        for job in jobs : 
+            job.join()
+            
+        AllA = []
+        AllB = []
+        while not As.empty() :
+            AllA.append(As.get())
+        while not Bs.empty() :
+            AllB.append(Bs.get())
+        
+        mask = np.ones(self.shape,dtype=bool)
+        Idxs = (tuple(AllA),tuple(AllB))
+        mask[Idxs] = False
+        if Reverse :
+            Copied[~mask] = Default
+        else :
+            Copied[mask] = Default
+        return Copied
+            
     
     
     def SetValues(self,Target,TempValue=-999) : 
@@ -571,7 +671,7 @@ class MultiSpArray(object) :
     ## methode d'access au pixels
     ########################################
     
-    def IntersectedPixels(self,Geom,Default=np.nan,Reverse=False,FromSource=True) : 
+    def IntersectedPixels(self,Geom,Default=np.nan,Reverse=False,FromSource=True,Cores=1) : 
         """
         Geom doit etre une geometrie valide de type shapely
         renvoit une selection de pixel triee par tuile :  CoordTile : SpArray
@@ -597,7 +697,10 @@ class MultiSpArray(object) :
             Js.append(key[1])
             Raster = self.GetRaster(key,FromSource=FromSource)
             if Raster.Extent.Geom.intersects(Geom)==True :
-                Pxs = Raster.ScanLine(Geom,Default,Reverse)
+                if Cores==1 :
+                    Pxs = Raster.ScanLine(Geom,Default,Reverse)
+                else : 
+                    Pxs = Raster.ScanLineMC(Geom,Default,Reverse,Cores=Cores)
                 Dico[key] = Pxs
                 Extents.append(Pxs.Extent)
         
@@ -995,34 +1098,42 @@ def QuadraticDistance(Dists,BandWidth) :
 #Tests !
 
 
-#if __name__=="__main__" : 
+if __name__=="__main__" : 
     
-#    import time
-#    
-#    def timing(f):
-#        def wrap(*args):
-#            time1 = time.time()
-#            ret = f(*args)
-#            time2 = time.time()
-#            print('{:s} function took {:.3f} ms'.format(f.__name__, (time2-time1)*1000.0))
-#    
-#            return ret
-#        return wrap
-#    
-#    def PlotPoly(Poly,LineColor="r",LineWidth=1) :
-#        Lines=[list(Poly.boundary.coords)]
-#        lc = LineCollection(Lines,colors=LineColor,linewidths=LineWidth)
-#        fig = plt.gcf()
-#        ax = fig.axes[0]
-#        ax.add_collection(lc)
-#        plt.show()
-#          
-#    
-#    @timing
-#    def test() : 
-#        Raster1.IntersectedPixels(Poly)
-#        
-#        
+    import time
+    
+    def timing(f):
+        def wrap(*args):
+            time1 = time.time()
+            ret = f(*args)
+            time2 = time.time()
+            print('{:s} function took {:.3f} ms'.format(f.__name__, (time2-time1)*1000.0))
+    
+            return ret
+        return wrap
+    
+    def PlotPoly(Poly,LineColor="r",LineWidth=1) :
+        Lines=[list(Poly.boundary.coords)]
+        lc = LineCollection(Lines,colors=LineColor,linewidths=LineWidth)
+        fig = plt.gcf()
+        ax = fig.axes[0]
+        ax.add_collection(lc)
+        plt.show()
+          
+    
+    @timing
+    def test1() : 
+        Merged.ScanLine(Poly,Default=0)
+        
+    @timing
+    def test2() : 
+        Merged.ScanLineMC(Poly,Default=0)
+        
+    @timing
+    def test3() : 
+        Merged.ScanLineMC(Poly,Default=0,Cores=4)
+        
+        
 #    Arr1 = np.array([range(10) for e in range(10)])
 #    Raster1 = SpArray(data=Arr1,Extent=(0,0,100,100),Src="")
 #    
@@ -1032,10 +1143,10 @@ def QuadraticDistance(Dists,BandWidth) :
 #    Raster1.Extent.Plot()
 #    Raster2.Plot()
 #    Raster2.Extent.Plot()
-#    Raster3 = Raster1.SetValues(Raster2)
-#    Raster3.Plot()
+#    
 #    Poly = shapely.wkt.loads("Polygon ((34 20.5, 150 20.5, 75.2 30, 34 50.2, 34 20.5))")
 #    Pxs1 = Raster1.ScanLine(Poly,Default=0)
+#    Pxs1MC = Raster1.ScaneLineMC(Poly,Default=0)
 #    Pxs2 = Raster1.ScanLine(Poly,Default=0,Reverse=True)
 #    Pxs1.Plot()
 #    Raster1.Plot()
@@ -1049,22 +1160,32 @@ def QuadraticDistance(Dists,BandWidth) :
 #    plt.scatter(Xs,Ys,c="r")
 #    PlotPoly(Poly)
     
-#    Poly = shapely.wkt.loads("Polygon ((654666.14606649207416922 6861235.97581147402524948, 654588.73020110744982958 6861178.4277345510199666, 654517.48020110744982958 6861069.49744608905166388, 654597.63645110744982958 6861114.71379224304109812, 654636.00183572282548994 6861177.05754224304109812, 654692.1797203382011503 6861096.90129224304109812, 654781.92731649207416922 6861160.6152345510199666, 654808.64606649207416922 6861243.511869166046381, 654716.84318187669850886 6861301.74504224304109812, 654663.40568187669850886 6861260.63927301205694675, 654666.14606649207416922 6861235.97581147402524948))")
-#    Link = r"C:\Users\gelbj\OneDrive\Bureau\TEMP\BatiParis_TestRaster.tif"
-#    Raster1 = MultiSpArray(100,Source=Link)
-#    Merged = Raster1.Merge()
-#    Values = Merged.Samples([(654666.37687724,6861057.18988329),(654759.88878528,6861011.09557013),(654665.27414248,6860982.64501320),(654834.21310841,6861013.30103966),(654581.68684732,6860983.30665406),(654704.53150010,6861017.71197872)])
-#    #Raster1.Save(r"I:\TEMP\BatiParis_TestRaster_copied.tif",FromSource=True,Default=-999)
-#    Merged = Raster1.Merge()
-#    Raster1.Plot()
-#    Merged.Plot()
-#    X,Y = Merged.ArrayCoords()
-#    X.Plot()
-#    Y.Plot()
-#    Center = Poly.centroid
-#    Centercoords = (Center.x,Center.y)
-#    Distance = np.sqrt((X-Centercoords[0])**2+(Y-Centercoords[1])**2)
-#    
+    Poly = shapely.wkt.loads("Polygon ((654666.14606649207416922 6861235.97581147402524948, 654588.73020110744982958 6861178.4277345510199666, 654517.48020110744982958 6861069.49744608905166388, 654597.63645110744982958 6861114.71379224304109812, 654636.00183572282548994 6861177.05754224304109812, 654692.1797203382011503 6861096.90129224304109812, 654781.92731649207416922 6861160.6152345510199666, 654808.64606649207416922 6861243.511869166046381, 654716.84318187669850886 6861301.74504224304109812, 654663.40568187669850886 6861260.63927301205694675, 654666.14606649207416922 6861235.97581147402524948))")
+    Link = r"C:\Users\gelbj\OneDrive\Bureau\TEMP\BatiParis_TestRaster.tif"
+
+    Raster1 = MultiSpArray(400,Source=Link)
+    Merged = Raster1.Merge()
+    
+    print("testing with vanilla function ...")
+    test1()
+    print("testing with two threads ...")
+    test2()
+    print("testing with four threads ...")
+    test3()
+    
+    
+    #Values = Merged.Samples([(654666.37687724,6861057.18988329),(654759.88878528,6861011.09557013),(654665.27414248,6860982.64501320),(654834.21310841,6861013.30103966),(654581.68684732,6860983.30665406),(654704.53150010,6861017.71197872)])
+    #Raster1.Save(r"I:\TEMP\BatiParis_TestRaster_copied.tif",FromSource=True,Default=-999)
+    #Merged = Raster1.Merge()
+    #Raster1.Plot()
+    #Merged.Plot()
+    #X,Y = Merged.ArrayCoords()
+    #X.Plot()
+    #Y.Plot()
+    #Center = Poly.centroid
+    #Centercoords = (Center.x,Center.y)
+    #Distance = np.sqrt((X-Centercoords[0])**2+(Y-Centercoords[1])**2)
+    
 #    #K1 = KernelDensity(Merged,[Poly.centroid],100,GaussianDistance)
 #    #K2 = KernelDensity(Merged,[Poly.centroid],100,InverseLogDistance)
 #    K3 = Merged.KernelDensity([Poly.centroid],100,QuadraticDistance)

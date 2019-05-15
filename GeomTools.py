@@ -8,6 +8,9 @@ Created on Fri Feb  1 19:20:30 2019
 import shapely
 from shapely import geometry,wkt
 
+from matplotlib import pyplot as plt
+from matplotlib.collections import LineCollection
+
 """
 Ensemble de fonction de geometrie basee sur shapely
 """
