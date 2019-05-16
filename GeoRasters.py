@@ -119,7 +119,7 @@ class SpArray(np.ndarray):
         Cols = ((Xs-self.Extent.Xmin) / self.PixelShape[0]).astype(int)
         Cols[Cols==self.shape[1]]-=1
         
-        Rows = self.shape[0]-((Ys-self.Extent.Ymin)/self.PixelShape[1]).astype(int)
+        Rows = self.shape[0]-((Ys-self.Extent.Ymin)/self.PixelShape[1]).astype(int)-1
         Rows[Rows==self.shape[0]]-=1
         
         PreValues = np.zeros(shape=Rows.shape)

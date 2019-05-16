@@ -17,6 +17,8 @@ import queue as Queue
 import sqlite3
 import os
 from GeomTools import GeoExtent
+import itertools
+import pandas as pd
 
 ###################################################
 ###################################################
@@ -171,52 +173,99 @@ def calculate_field(self,FieldName,Func,**kwargs) :
     self[FieldName] = Values
         
 
-gpd.geodataframe.GeoDataFrame.CalculateField = calculate_field
+gpd.geodataframe.GeoDataFrame.Apply = calculate_field
 #############################################
+
+
+######
+## Fonction pour calculer un champs avec une fonction complexe en mode multi threading
+######
+#
+#
+#def calculate_field_mc(self,Func,Cores=2,**kwargs) : 
+#    """
+#    Permet d'utiliser des fonctions complexes pour calculer un nouveau champs en mode multithreading
+#    NB : accelere le calcul du champ dans une certaine mesure
+#    self referre a geodataframe sur lequel est calcule le champs
+#    Feat referre a la feature en cours d'iteration
+#    i referre au rang de cette feature dans le geodataframe
+#    la fonction doit donc ressembler a : Func(Feat,i,**kwargs)
+#    """
+#    def Worker(Args) : 
+#        Part,Func,DF,kwargs,results = Args
+#        for Id in Part :
+#            element = DF.iloc[Id,:]
+#            results.put((Id,Func(element,Id,**kwargs)))
+#            
+#    
+#    idx = range(self.shape[0])
+#    Parts = Chunks(idx,Cores)
+#    jobs=[]
+#    results = Queue.Queue()
+#    for i,Part in enumerate(Parts) : 
+#        print("Starting job : "+str(i))
+#        p = threading.Thread(target = Worker, args=((Part,Func,self,kwargs,results),))
+#        p.start()
+#        jobs.append(p)
+#    
+#    for job in jobs : 
+#        job.join()
+#    Results = []
+#    while not results.empty() :
+#        Results.append(results.get())
+#    Results.sort(key=lambda x : x[0])
+#    return [R[1] for R in Results]
+#        
+#
+#gpd.geodataframe.GeoDataFrame.ApplyMC = calculate_field_mc
+##############################################
 
 
 #####
 # Fonction pour calculer un champs avec une fonction complexe en mode multi threading
 #####
 
-def calculate_field_mc(self,FieldName,Func,Cores=2,**kwargs) : 
+
+def calculate_field_mc(self,Func,Cores=2,**kwargs) : 
     """
     Permet d'utiliser des fonctions complexes pour calculer un nouveau champs en mode multithreading
     NB : accelere le calcul du champ dans une certaine mesure
     self referre a geodataframe sur lequel est calcule le champs
     Feat referre a la feature en cours d'iteration
+    NB : keep in mind the dataframe is splitted... This will fail is you try to reach features in an other chunk
     i referre au rang de cette feature dans le geodataframe
     la fonction doit donc ressembler a : Func(Feat,i,**kwargs)
     """
+    from multiprocessing import Process
+
     def Worker(Args) : 
-        Part,Func,DF,kwargs,results = Args
-        for Id in Part :
-            element = DF.iloc[Id,:]
-            results.put((Id,Func(element,Id,**kwargs)))
+        ID,Part,Func,kwargs,results = Args
+        Values = Part.apply(Func,axis=1,**kwargs)
+        results.put((ID,Values))
             
     
-    idx = range(self.shape[0])
-    Parts = Chunks(idx,Cores)
+    chunks = np.array_split(self, Cores)
     jobs=[]
     results = Queue.Queue()
-    for i,Part in enumerate(Parts) : 
+    for i,Part in enumerate(chunks) : 
         print("Starting job : "+str(i))
-        p = threading.Thread(target = Worker, args=((Part,Func,self,kwargs,results),))
+        p = threading.Thread(target = Worker, args=((i,Part,Func,kwargs,results),))
         p.start()
         jobs.append(p)
     
     for job in jobs : 
         job.join()
     Results = []
+    print("End of all jobs !")
     while not results.empty() :
         Results.append(results.get())
     Results.sort(key=lambda x : x[0])
-    self[FieldName] = [R[1] for R in Results]
+    return pd.Series(itertools.chain(Results))
+    #return [R[1] for R in Results]
         
 
-gpd.geodataframe.GeoDataFrame.CalculateFieldMC = calculate_field_mc
+gpd.geodataframe.GeoDataFrame.ApplyMC = calculate_field_mc
 #############################################
-
 
 
 #####
@@ -352,9 +401,52 @@ gpd.geodataframe.GeoDataFrame.HelpMe = help_me
 
 
 
+
+#from multiprocessing import  Pool
+#from functools import partial
+#import numpy as np
+#
+#def parallelize(data, func, num_of_processes=8):
+#    data_split = np.array_split(data, num_of_processes)
+#    pool = Pool(num_of_processes)
+#    data = pd.concat(pool.map(func, data_split))
+#    pool.close()
+#    pool.join()
+#    return data
+#
+#def run_on_subset(func, data_subset):
+#    return data_subset.apply(func, axis=1)
+#
+#def parallelize_on_rows(data, func, num_of_processes=8):
+#    return parallelize(data, partial(run_on_subset, func), num_of_processes)
+#
+
+
+
+
 if __name__=="__main__" : 
     DF = gpd.read_file(gpd.datasets.get_path("naturalearth_cities"))
-    DF.SaveSdb("C:/Users/gelbj/OneDrive/Bureau/TEMP/BDTest.sdb",'Cities2')
+    import time
+    
+    def CostlyFunction(Feat) : 
+        for e in range(5000) : 
+            Buff = Feat["geometry"].buffer(20)
+        return Buff
+    
+    
+    print("duree classique : ")
+    Start = time.time()
+    V2 = DF.apply(CostlyFunction,axis=1)
+    End = time.time()
+    print("duration : "+str(End-Start))
+    print("")
+    print("duree booste 6 : ")
+    Start = time.time()
+    V1 = DF.ApplyMC(CostlyFunction,Cores=10)
+    End = time.time()
+    print("duration : "+str(End-Start))    
+    
+    #DF.SaveSdb("C:/Users/gelbj/OneDrive/Bureau/TEMP/BDTest.sdb",'Cities2')
 #    DF = gpd.read_file(FileTest)
 #    DF = DF.set_index("objectid",drop=True)
 #    DF2 = DF.to_crs(epsg=3857)
