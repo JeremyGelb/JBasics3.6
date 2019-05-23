@@ -180,6 +180,21 @@ def LineTouches(L1,L2,Tolerance=0.01):
         return False
 
 
+def PointsAlongLine(Line,Distance) : 
+    """
+    Fonction permettant de generer un point tous les x metre le long d'une ligne en plus du premier et du dernier point
+    """
+    Coords = list(Line.coords)
+    Points = [shapely.geometry.Point(Coords[0])]
+    if Line.length>Distance : 
+        TotDist = 0
+        while TotDist+Distance<Line.length : 
+            TotDist+=Distance
+            Pt = Line.interpolate(TotDist)
+            Points.append(Pt)
+    Points.append(shapely.geometry.Point(Coords[-1]))
+    return Points
+            
 
 def SplitLineByDist(Line,Distance) : 
     """
