@@ -19,6 +19,7 @@ import os
 from GeomTools import GeoExtent
 import itertools
 import pandas as pd
+import geojson
 
 ###################################################
 ###################################################
@@ -54,8 +55,12 @@ def Chunks(a, n):
 def GetExtent(Geom) : 
     x,y = zip(*list(Geom.envelope.boundary.coords))
     return min(x), min(y), max(x), max(y)
-    
-    
+
+
+
+
+
+
 ###################################################
 ###################################################
 
@@ -301,7 +306,7 @@ gpd.geodataframe.GeoDataFrame.SpatialFilter = spatial_filter
 
 
 ###############
-## Afficher des fonctions utilitaires
+## Enregistrer dans une bd sqlite
 ###############
 
 def save_sdb(self,File,TableName,GeomField="geometry",Id="OID") : 
@@ -371,7 +376,62 @@ def save_sdb(self,File,TableName,GeomField="geometry",Id="OID") :
     Source.Destroy()
         
 
-gpd.geodataframe.GeoDataFrame.SaveSdb = save_sdb 
+gpd.geodataframe.GeoDataFrame.SaveSdb = save_sdb
+
+
+
+###############
+## convertir en objet geojson
+###############
+
+def to_geojson(self) :
+    """
+    Fonction pour convertir notre joli geodataframe en un Geojson object from geojson library
+    """
+    GeomConverter = {"Point" : geojson.Point,
+                     "LineString" : geojson.LineString,
+                     "Polygon" : geojson.Polygon,
+                     "MultiPoint":geojson.MultiPoint,
+                     "MultiLineString":geojson.MultiLineString,
+                     "MultiPolygon":geojson.MultiPolygon}
+    Features = []
+    for Feat in self.iterfeatures() :
+        Dico = {Key:Value for Key,Value in Feat.items() if Key!="geometry"}
+        Geom = GeomConverter[Feat["geometry"]["type"]](Feat["geometry"]["coordinates"])
+        Features.append(geojson.Feature(geometry=Geom,properties=Dico))
+
+    CRS = {"type": "name","properties": {"name": self.crs["init"]}}
+    Final = geojson.FeatureCollection(Features,crs=CRS)
+    return Final
+
+gpd.geodataframe.GeoDataFrame.ToGeojson= to_geojson
+
+
+###############
+## convertir en objet topojson avec js2py
+###############
+
+def to_topojson(self,Name="foo") :
+    import js2py
+    from path import Path
+    Root = str(Path(__file__).parent)
+    GeoJson = self.ToGeojson()
+    JSFile = open(Root+"/libs/topojson.js","r")
+    JSTring = JSFile.read()
+    JSTring += "topojson.topology({"+Name+": "+str(GeoJson)+"})"
+    try :
+        result = js2py.eval_js(JSTring)
+    except Exception as e :
+        Out = open(str(Path(__file__).parent)+"/logtopojson.txt","w")
+        Out.write(JSTring)
+        Out.close()
+        raise e
+    result = result.to_dict()
+    result["crs"] = GeoJson["crs"]
+    result = str(result).replace("'",'"')
+    return result
+
+gpd.geodataframe.GeoDataFrame.ToTopojson= to_topojson
 
 #############################################
 
@@ -399,6 +459,39 @@ def help_me(self) :
     
 gpd.geodataframe.GeoDataFrame.HelpMe = help_me
 
+
+###################################################
+###################################################
+#_______________________________fonctions de lecture de fichiers externes
+
+def ReadSdb(DataBase,LayerName) :
+    #ouverture de la couche
+    DB = ogr.Open(DataBase)
+    Layer = DB.GetLayerByName(LayerName)
+    #lecture des champs
+    # LayerDef = Layer.GetLayerDefn()
+    # Fields = []
+    # for i in range(LayerDef.GetGeomFieldCount()) :
+    #     Field = LayerDef.GetFieldDefn(i)
+    #     Fields.append({
+    #             "Name":Field.GetName(),
+    #             "Type" : Field.GetTypeName()
+    #             })
+    #lecture des donnees
+    Data = []
+    Geoms = []
+    for i in range(Layer.GetFeatureCount()) :
+        Feat = Layer.GetNextFeature()
+        Fields = Feat.items()
+        Geoms.append(ToShapely(Feat.GetGeometryRef()))
+        Data.append(Fields)
+    SpRef = Layer.GetSpatialRef()
+    EPSG = SpRef.GetAttrValue("AUTHORITY",1)
+    DF = pd.DataFrame.from_dict(Data)
+    crs = {'init': 'epsg:'+str(EPSG)}
+    GDF = gpd.geodataframe.GeoDataFrame(DF,crs=crs,geometry=Geoms)
+    GDF.SpatialFilter = spatial_filter
+    return (GDF)
 
 
 

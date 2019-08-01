@@ -235,9 +235,8 @@ def SplitLineByDist(Line,Distance) :
                 Pts = [Pt]
         Segments.append(shapely.geometry.LineString([(P.x,P.y) for P in Pts]))
         return Segments
-                
-            
-        
+
+
         
             
     
