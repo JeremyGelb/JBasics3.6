@@ -288,7 +288,7 @@ def spatial_filter(self,Geom,Methode="intersect") :
         indexed = self.iloc[list(Index.intersection(Geom.bounds))]
         #xmin, ymin, xmax, ymax = GetExtent(Geom)
         #indexed = self.cx[xmin:xmax, ymin:ymax]
-        if Methode == "intersect" : 
+        if Methode == "intersect" :
             return indexed[indexed.intersects(Geom)]
         elif Methode == "touche" : 
             return indexed[indexed.touches(Geom)]
@@ -303,6 +303,40 @@ def spatial_filter(self,Geom,Methode="intersect") :
 
 gpd.geodataframe.GeoDataFrame.SpatialFilter = spatial_filter        
 #############################################
+
+
+#####
+# Fonction pour retrouver les x plus proches voisins
+#####
+
+def find_neighbours(self,Geom,n=1,MaxDist=float("inf"),Jump=100) :
+    """
+    Parameters
+    ----------
+    Geom : shapely geometry
+        the geometry arround wich we have to find neighbours.
+    n : integer, optional
+        DESCRIPTION. the maximum number of neighbour to return (ordered) The default is 1.
+    MaxDist : float, optional
+        DESCRIPTION. the maximum distance to search. The default is inf.
+    Jump : float, optional
+        DESCRIPTION. the incremental distance. The default is 100.
+
+    Returns a list of features and distances (might be empty)
+    -------
+    """
+    Dist = Jump
+    while Dist<MaxDist :
+        Neighbours = self.SpatialFilter(Geom.buffer(Dist))
+        if len(Neighbours)<n :
+            Dist+=Jump
+        else :
+            Result = [(F["geometry"].distance(Geom),F) for F in Neighbours.Iterate()]
+            Result.sort(key=lambda x:x[0])
+            return [R[1] for R in Result[1:n]]
+    return []
+
+gpd.geodataframe.GeoDataFrame.FindNeighbours = find_neighbours
 
 
 ###############
